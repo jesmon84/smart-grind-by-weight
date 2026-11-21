@@ -28,6 +28,10 @@ WeightSamplingTask::WeightSamplingTask() {
     // Initialize hardware state
     hardware_initialized = false;
     hardware_validation_passed = false;
+
+    stall_recovery_attempted = false;
+    last_stall_recovery_ms = 0;
+    stall_recovery_count = 0;
     
     instance = this;
 }
@@ -142,6 +146,7 @@ void WeightSamplingTask::task_impl() {
         
         // Core sampling operations (extracted from RealtimeController)
         sample_and_feed_weight_sensor();
+        recover_stalled_sampling_if_needed();
         
         // Weight sensor state management (non-blocking operations only)
         if (weight_sensor) {
@@ -268,6 +273,67 @@ void WeightSamplingTask::sample_and_feed_weight_sensor() {
         weight_sensor->record_sample_timestamp();
     }
 #endif
+}
+
+void WeightSamplingTask::recover_stalled_sampling_if_needed() {
+    if (!weight_sensor || !hardware_initialized) return;
+
+    // Rail readings mean the HX711 is answering but its input is broken; a
+    // reset cannot fix wiring, and the out-of-range fault reports it instead.
+    if (weight_sensor->is_signal_out_of_range()) return;
+
+    uint32_t sample_age_ms = 0;
+    const bool has_sample = weight_sensor->get_sample_age_ms(sample_age_ms);
+    // A failed reset leaves no sample, so keep retrying it on the same schedule.
+    const bool stalled = has_sample ? sample_age_ms >= SYS_LOADCELL_STALL_RECOVERY_MS
+                                    : stall_recovery_attempted;
+    if (!stalled) return;
+
+    const uint32_t now = millis();
+    if (stall_recovery_attempted &&
+        now - last_stall_recovery_ms < SYS_LOADCELL_RECOVERY_MIN_INTERVAL_MS) {
+        return;
+    }
+
+    stall_recovery_attempted = true;
+    last_stall_recovery_ms = now;
+    stall_recovery_count++;
+    LOG_BLE("[SCALE] No HX711 sample for %lums; resetting load cell ADC (attempt %lu)\n",
+            has_sample ? static_cast<unsigned long>(sample_age_ms) : 0UL,
+            static_cast<unsigned long>(stall_recovery_count));
+
+    if (reset_hx711_after_stall()) {
+        LOG_BLE("[SCALE] HX711 reset succeeded; tare and calibration kept\n");
+    } else {
+        LOG_BLE("[SCALE] HX711 reset failed; retrying in %lus\n",
+                static_cast<unsigned long>(SYS_LOADCELL_RECOVERY_MIN_INTERVAL_MS / 1000));
+    }
+}
+
+bool WeightSamplingTask::reset_hx711_after_stall() {
+    // Power-cycle the HX711 (SCK held high > 60 us) and re-establish
+    // communication. Tare offset and calibration live in WeightSensor and are
+    // untouched, so a recovered scale reads the same zero as before.
+    weight_sensor->power_down();
+    vTaskDelay(pdMS_TO_TICKS(10));
+    weight_sensor->power_up();
+    esp_task_wdt_reset();
+
+    const bool begin_success = weight_sensor->begin();
+    esp_task_wdt_reset();
+    if (!begin_success) return false;
+
+    // The first conversions after power-up are still settling; drop them so
+    // they do not disturb the filters or the displayed weight.
+    const uint32_t discard_start = millis();
+    while (millis() - discard_start < SYS_LOADCELL_RECOVERY_DISCARD_MS) {
+        if (weight_sensor->data_waiting_async()) {
+            weight_sensor->update_async();
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    esp_task_wdt_reset();
+    return true;
 }
 
 bool WeightSamplingTask::validate_hardware_ready() const {
