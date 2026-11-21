@@ -51,6 +51,10 @@ private:
     std::atomic<bool> tare_initialized_{false};
     std::atomic<bool> has_sample_{false};
     std::atomic<uint32_t> last_sample_ms_{0};
+    // Consecutive conversions pinned near an ADC rail. These are dropped, so a
+    // run of them looks like a lost scale; the flag tells the two apart.
+    uint8_t consecutive_rail_samples_ = 0;
+    std::atomic<bool> signal_out_of_range_{false};
     // Last observed conversion, including rejected rails; -1 means no reading.
     std::atomic<int32_t> diagnostic_raw_adc_{-1};
     
@@ -207,6 +211,15 @@ public:
     }
     // When the newest sample arrived; changes once per sample.
     uint32_t get_last_sample_ms() const { return last_sample_ms_.load(); }
+    // Milliseconds since the last accepted sample; false until one arrives.
+    bool get_sample_age_ms(uint32_t& age_ms) const {
+        if (!has_sample_.load()) return false;
+        age_ms = static_cast<uint32_t>(millis() - last_sample_ms_.load());
+        return true;
+    }
+    // True while the ADC keeps returning readings pinned near a rail: the load
+    // cell signal or excitation path is broken rather than the HX711 missing.
+    bool is_signal_out_of_range() const { return signal_out_of_range_.load(); }
     float get_calibration_factor();                          
     int32_t get_zero_offset() const { return tare_offset; }
     bool is_initialized();                                   

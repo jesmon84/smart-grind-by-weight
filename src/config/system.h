@@ -54,6 +54,13 @@
 // Legacy task scheduler intervals (deprecated - kept for compatibility)
 #define SYS_TASK_LOADCELL_INTERVAL_MS 20                                       // Load cell polling frequency (50Hz)
 
+// Load cell stall recovery: if the HX711 stops delivering samples at runtime
+// (supply dip or interference when the motor starts), reset it instead of
+// leaving the scale dead until the next power cycle.
+#define SYS_LOADCELL_STALL_RECOVERY_MS 300                                     // No sample for this long triggers a reset (3 missed samples at 10 SPS)
+#define SYS_LOADCELL_RECOVERY_MIN_INTERVAL_MS 20000                            // At most one reset per 20 s (three a minute)
+#define SYS_LOADCELL_RECOVERY_DISCARD_MS 500                                   // Samples discarded after a reset while the HX711 settles
+
 
 //------------------------------------------------------------------------------
 // TIME CONVERSION CONSTANTS

@@ -30,6 +30,7 @@ SENSOR_HEADER_CODE = (
     "bool is_tare_in_progress() const",
     "bool has_recent_sample() const",
     "uint32_t get_last_sample_ms() const",
+    "bool is_signal_out_of_range() const",
     "int32_t get_zero_offset() const",
 )
 SENSOR_SOURCE_CODE = (

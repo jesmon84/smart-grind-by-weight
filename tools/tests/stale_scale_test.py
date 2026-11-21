@@ -133,6 +133,7 @@ using std::min;
 uint32_t clock_ms=0;
 uint32_t millis(){return clock_ms;}
 constexpr int32_t kAdcSaturationMargin=0xFFFF,kAdcMaximumRaw=0xFFFFFF;
+constexpr uint8_t kRailSamplesForOutOfRange=5;
 struct Filter {void add_sample(int32_t,uint32_t){} int32_t get_smoothed_raw(int){return 42;}};
 class WeightSensor {
 public:
@@ -141,6 +142,8 @@ public:
  std::atomic<bool> has_sample_{false},tare_initialized_{false};
  std::atomic<uint32_t> last_sample_ms_{0};
  std::atomic<int32_t> diagnostic_raw_adc_{-1};
+ uint8_t consecutive_rail_samples_=0;
+ std::atomic<bool> signal_out_of_range_{false};
  Filter raw_filter;
  bool doTare=false,tareStatus=false,data_available=false;
  int tareTimes=0,DATA_SET=18;
@@ -201,10 +204,18 @@ int main(){
   assert(sensor.last_sample_ms_.load()==before && sensor.tareTimes==0);
   assert(!sensor.has_recent_sample());
  }
+ // Four rail readings are a glitch; the fifth in a row reports the signal out of range.
+ assert(!sensor.is_signal_out_of_range());
+ sensor.raw=0;clock_ms+=100;assert(!sensor.sample_and_feed_filter());
+ assert(sensor.is_signal_out_of_range());
+ {
+  Motor motor;Controller c;c.weight_sensor=&sensor;c.grinder=&motor;c.cycle();
+  assert(!motor.running && c.phase==GrindPhase::TIMEOUT && c.error=="Load cell out of range");
+ }
  sensor.doTare=false;
  for(int32_t raw:{0x10000,0xFFFFFF-0x10000}){
   sensor.raw=raw;assert(sensor.sample_and_feed_filter());assert(sensor.has_recent_sample());
-  assert(!sensor.is_adc_near_saturation());
+  assert(!sensor.is_adc_near_saturation());assert(!sensor.is_signal_out_of_range());
  }
  sensor.raw=0x800000;clock_ms=UINT32_MAX-100;assert(sensor.sample_and_feed_filter());
  clock_ms=398;assert(sensor.has_recent_sample());clock_ms=399;assert(!sensor.has_recent_sample());

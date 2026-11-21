@@ -22,6 +22,8 @@ public:
     std::atomic<bool> has_sample_{false};
     std::atomic<uint32_t> last_sample_ms_{0};
     std::atomic<int32_t> diagnostic_raw_adc_{-1};
+    uint8_t consecutive_rail_samples_ = 0;
+    std::atomic<bool> signal_out_of_range_{false};
     std::atomic<HardwareFault> hardware_fault_{HardwareFault::NONE};
     static const uint8_t DATA_SET = 16 + 1 + 1;
     bool doTare = false;

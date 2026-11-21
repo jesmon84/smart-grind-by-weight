@@ -446,8 +446,13 @@ void GrindController::update() {
         if (grinder) grinder->stop();
         final_weight = loop_data.current_weight;
         last_session_result_ = GrindSessionResult::SCALE_ERROR;
-        set_error_message("Scale disconnected");
-        queue_log_message("[SCALE] Weight grind stopped: no valid sample for 500ms\n");
+        // Rail readings mean the HX711 answers but the load cell signal is
+        // broken (wiring, excitation, overload), which is a different fix.
+        const bool out_of_range = weight_sensor && weight_sensor->is_signal_out_of_range();
+        set_error_message(out_of_range ? "Load cell out of range" : "Scale disconnected");
+        queue_log_message(out_of_range
+            ? "[SCALE] Weight grind stopped: load cell signal pinned at ADC rail for 500ms\n"
+            : "[SCALE] Weight grind stopped: no valid sample for 500ms\n");
         switch_phase(GrindPhase::TIMEOUT, loop_data);
         return;
     }
