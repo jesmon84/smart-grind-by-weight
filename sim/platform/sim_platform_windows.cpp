@@ -2,6 +2,7 @@
 
 #include <src/drivers/windows/lv_windows_display.h>
 #include <windows.h>
+#include <wchar.h>
 
 namespace sim_platform {
 namespace {
