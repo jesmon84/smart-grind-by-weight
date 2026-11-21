@@ -236,10 +236,14 @@ void ReadyScreen::update_network_status() {
             detail = network_manager.network_name() + "\nhttp://" + network_manager.hostname() +
                      ".local\n" + network_manager.ip_address();
             break;
-        case NetworkState::WIFI_RETRY_WAIT:
-            status = "WI-FI INTERRUPTED";
-            detail = "Reconnecting automatically...";
+        case NetworkState::WIFI_RETRY_WAIT: {
+            // A failed first join also waits here before its next attempt.
+            const String join_failure = network_manager.join_failure_summary();
+            status = join_failure.isEmpty() ? "WI-FI INTERRUPTED" : "WI-FI RETRYING";
+            if (!join_failure.isEmpty()) detail = join_failure + "\n";
+            detail += "Reconnecting automatically...";
             break;
+        }
         case NetworkState::WIFI_SETUP_AP: {
             status = "CONNECT WI-FI";
             const String& ssid = provisioning_service.access_point_ssid();

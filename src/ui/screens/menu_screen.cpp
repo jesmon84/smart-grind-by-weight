@@ -418,10 +418,14 @@ void MenuScreen::update_network_status() {
                 detail = network_manager.network_name() + "\nhttp://" + network_manager.hostname() + ".local\n" + network_manager.ip_address();
             }
             break;
-        case NetworkState::WIFI_RETRY_WAIT:
-            status = "Connection lost";
-            detail = "Will retry automatically.";
+        case NetworkState::WIFI_RETRY_WAIT: {
+            // A failed first join also waits here before its next attempt.
+            const String join_failure = network_manager.join_failure_summary();
+            status = join_failure.isEmpty() ? "Connection lost" : "Retrying";
+            detail = join_failure.isEmpty() ? String() : join_failure + "\n";
+            detail += "Will retry automatically.";
             break;
+        }
         case NetworkState::WIFI_SETUP_AP: {
             status = "Wi-Fi setup";
             const String& ssid = provisioning_service.access_point_ssid();
