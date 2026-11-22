@@ -4,7 +4,18 @@ This file records the user-visible changes in the community-maintained release
 line. Earlier release history remains available in the original project's
 [GitHub releases](https://github.com/jaapp/smart-grind-by-weight/releases).
 
-## [Unreleased]
+## [2.0.1] - 2026-11-22
+
+With Wi-Fi on, this firmware can draw more power than the grinder's own 5 V
+supply has to spare; a Eureka's has very little. On the V2 grinder this was
+found on, the display went black and the grinder restarted in the middle of
+a grind. This release adds a switch that turns Wi-Fi off, **Menu → Wi-Fi →
+Enabled**, and one that pauses it while a grind runs, **Menu → Wi-Fi →
+Pause**. If you only use Wi-Fi for firmware updates, as the maintainer does,
+leave it off and switch it on when you want to update. The release also
+lowers the power draw in other ways, makes the stop on lifting the
+portafilter work on every grind and tidies the menu text. Settings are kept
+when you install it over 2.0.0.
 
 ### Grinding on a vibrating bench
 
@@ -643,6 +654,7 @@ Original commit authorship is retained in the repository history; the release
 also includes separately authored review, hardware-support and integration
 fixes described above.
 
+[2.0.1]: https://github.com/s31teg/smart-grind-by-weight/releases/tag/v2.0.1
 [2.0.0]: https://github.com/s31teg/smart-grind-by-weight/releases/tag/v2.0.0
 [1.5.0]: https://github.com/Clinteastman/smart-grind-by-weight/releases/tag/v1.5.0
 [1.5.1]: https://github.com/Clinteastman/smart-grind-by-weight/releases/tag/v1.5.1
