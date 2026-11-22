@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <vector>
 
 #include "FreeRTOS.h"
@@ -15,8 +16,17 @@ struct BenchQueue {
 };
 using QueueHandle_t = BenchQueue*;
 
+// The firmware creates its queues once and keeps them until the power is cut,
+// so it never deletes them. Here they belong to the stand-in kernel, which
+// frees them when the bench program ends.
+inline std::vector<std::unique_ptr<BenchQueue>>& bench_queues() {
+    static std::vector<std::unique_ptr<BenchQueue>> queues;
+    return queues;
+}
+
 inline QueueHandle_t xQueueCreate(size_t capacity, size_t item_size) {
-    return new BenchQueue{capacity, item_size, {}};
+    bench_queues().push_back(std::unique_ptr<BenchQueue>(new BenchQueue{capacity, item_size, {}}));
+    return bench_queues().back().get();
 }
 
 inline BaseType_t xQueueSend(QueueHandle_t queue, const void* item, TickType_t) {
