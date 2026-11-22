@@ -42,6 +42,7 @@ All profiles are fully customizable. Default grind-by-weight targets (fallback t
 - **Swipe up/down** on the ready screen to toggle between grind-by-weight and grind-by-time modes (when enabled in Menu → Grind Settings)
 - **Tap** to select profiles or buttons
 - **Long press** on profile targets to edit/customize them
+- **After a restart** the grinder returns to the profile you last stayed on for a couple of seconds or ground with. Profiles you only swipe across on the way to the Wi-Fi or menu page do not replace it
 
 > **Color cues:** The GRIND button background turns **red** in weight mode and **blue** in time mode, so you always know which behaviour is armed.
 
@@ -49,7 +50,7 @@ All profiles are fully customizable. Default grind-by-weight targets (fallback t
 Access **Menu → Grind Settings** to configure:
 - **Swipe Gestures**: Enable/disable vertical swipe gestures for mode switching (default: disabled)
 - **Time Mode**: Directly toggle between Weight and Time modes regardless of swipe setting
-- **Grind Screen**: Choose the layout shown while grinding: Arc (default), Chart or Circle
+- **Grind Screen**: Choose the layout every grind starts with: Arc (default), Chart or Circle
 - **Hold**: Keep the final weight on the finished screen after the cup is lifted (default: on). Turn it off to show the live scale reading instead
 - **Show for**: How long the finished screen stays after you lift the cup before returning to Ready: 15 s, 30 s, 1 min (default), 2 min or 5 min. While the cup is still on the scale the finished screen stays up, for at most 30 minutes. An error screen always stays for 1 minute
 - **Start on Cup**: Start the active profile automatically once a cup or portafilter at least the configured cup threshold (50 g by default) heavier than the empty scale has come to rest on it
@@ -83,7 +84,11 @@ These steps describe the default grind-by-weight workflow:
 6. GRIND COMPLETE shows the final settled weight in grams (with statistics), which stays on screen after you lift the cup
 7. Under the weight, a timer counts up from the moment the grind finished, so you can see how long the grounds have been waiting. It stops when you lift the cup. Until then the finished screen stays up and the display stays bright, for at most 30 minutes. In time mode, a PULSE restarts the timer
 
-If the portafilter is lifted off the scale while the grinder runs, the grind stops and the screen shows **STOPPED** with "Portafilter removed". This works in weight, time and manual modes. A manual grind is only watched when the scale was not tared with the portafilter on, because the grinder then cannot tell how heavy it is. A time grind that you have paused can be lifted, for example to distribute the grounds; the check starts again when you resume.
+If the portafilter is lifted off the scale during a grind, the grind stops and the screen shows **STOPPED** with "Portafilter removed". This works in weight, time and manual modes and on every grind: the grinder keeps track of how heavy the portafilter is, even though each weight grind zeroes the scale with the portafilter on. If you switch the grinder on with the portafilter already on the scale, the check starts once the portafilter has been lifted off for a second. A time grind that you have paused can be lifted, for example to distribute the grounds; the check starts again when you resume.
+
+The scale weighs best on a bench that stands still. A weight grind waits for the scale to read still before it tares, before each correction and before it reports the result. If something shakes the bench, such as a 3D printer on the same surface, the scale never reads still and the grind can wait until its 60-second limit. Keep your hands off the portafilter while a grind runs for the same reason. A weight grind that has not reached its target after 60 seconds stops with **TIMEOUT** and "Target not reached", for example when the hopper is empty, or with "Could not tare" when the scale never came to rest for its zero.
+
+For a grinder that has to stand on a vibrating bench, the firmware can be built with shaky-bench handling: each wait then ends after a few seconds, and a grind that finds its bench shaking works with the average of its readings, so it takes longer but still ends on target. It is off as shipped; see [Troubleshooting](TROUBLESHOOTING.md#shaky-bench-handling) for what it does and how to build it.
 
 > Optional automation (Menu → Grind Settings): enable auto-start and set the cup threshold below the empty cup or portafilter weight. The grinder remembers the weight the scale last rested at and starts as soon as the cup has come to rest at least that much heavier, however long positioning it takes. Auto-return then jumps back to Ready whenever that cup is lifted off again.
 
@@ -96,6 +101,11 @@ play/stop button to request the same target grind remotely. The request passes
 through the firmware's normal checks and state machine; Manual mode remains an
 on-device control.
 
+The dashboard is updated ten times a second during a grind and twice a second
+otherwise. A browser tab that is hidden or in the background pauses its
+connection and reconnects when you return to it, so a page left open does not
+keep the grinder's Wi-Fi busy.
+
 ### Quick Scale View
 Need a simple live readout? Open **Menu → Scale** to jump into a full-screen weight display. Entering the page automatically tares the scale (using the same blocking overlay as the main workflow), and a large `TARE` button at the bottom lets you re-zero manually whenever you need.
 
@@ -103,7 +113,7 @@ Need a simple live readout? Open **Menu → Scale** to jump into a full-screen w
 - **Arc Layout**: Clean, minimal arc-based interface
 - **Chart Layout**: Detailed charts showing flow rates and real-time grinding analytics
 - **Circle Layout**: In the style of the Mahlkönig E64, a light circle around the weight grows from the middle as the grind progresses and covers the display at the target. When the grind finishes, the whole display turns green (amber if the grind failed)
-- **Switching**: Choose the layout in **Menu → Grind Settings → Grind Screen**, or tap anywhere on the grind screen to cycle Arc → Chart → Circle during grinding
+- **Switching**: Choose the layout in **Menu → Grind Settings → Grind Screen**; every grind starts with it. Tapping anywhere on the grind screen cycles Arc → Chart → Circle for that grind only
 - **Screensaver**: A custom or built-in design can show on startup or when the
   display dims. An optional later panel-off stage protects the AMOLED during
   long idle periods.
@@ -147,11 +157,17 @@ Main Screen (swipe left/right between tabs, up/down to toggle weight/time mode i
     |   |   |-- Connection status display
     |   |   \-- Auto-disable timer display
     |   |
+    |   +-- Wi-Fi
+    |   |   |-- Enabled toggle (Wi-Fi on or off)
+    |   |   |-- Pause toggle (Wi-Fi off while a grind runs)
+    |   |   |-- Connection status, address and setup QR code
+    |   |   \-- Firmware update status and install button
+    |   |
 	    |   +-- Display
 	    |   |   |-- Normal brightness slider
 	    |   |   |-- Screensaver brightness slider
 	    |   |   |-- Screensaver startup/idle toggles
-	    |   |   \-- Optional Turn Display Off toggle
+	    |   |   \-- Turn off toggle (display off after a long idle time)
     |   |
     |   \-- Grind Settings
     |       |-- Swipe Gestures toggle (enable/disable vertical swipes)
@@ -163,15 +179,15 @@ Main Screen (swipe left/right between tabs, up/down to toggle weight/time mode i
     |       |-- Return on Removal toggle (drop back to Ready when that weight leaves)
     |       |-- Purging (Prime/Purge radio buttons)
     |       |-- Amount slider (0.1g-5.0g for purge/prime operation)
-    |       |-- Motor latency slider (30-300ms manual Pulse Tune fallback)
-    |       \-- Coast compensation slider
+    |       |-- Latency slider (30-300ms manual Pulse Tune fallback)
+    |       \-- Coast ratio slider
     |
     \-- Info
         +-- Diagnostics
         |   |-- Load Cell Status (calibration flag, calibration factor)
         |   |-- Noise Floor (std dev g/ADC, noise level indicator)
         |   |-- Active diagnostic warnings
-        |   \-- Reset diagnostics button
+        |   \-- Clear Warnings button
         |
         +-- System Info
         |   |-- Firmware version & build number
@@ -193,7 +209,7 @@ Main Screen (swipe left/right between tabs, up/down to toggle weight/time mode i
 
 During Grinding:
 |-- Weight/elapsed display & progress
-|-- Tap anywhere: cycle Arc → Chart → Circle layouts
+|-- Tap anywhere: cycle Arc → Chart → Circle layouts for this grind
 |-- STOP button
 \-- Purge Confirmation (appears in Purge mode after grinder saturation)
     |-- "Grinder Purged" title
@@ -241,15 +257,34 @@ grinder.
   duration in the local web app. You can optionally turn the panel fully off
   after a second delay; this is disabled by default, so the current
   always-visible screensaver behaviour is preserved after updating.
-- **Device settings**: Brightness, startup/idle screensaver and **Turn Display
-  Off** toggles remain available under **Menu → Display** and are synchronized
-  with the web settings. The web app controls the additional off delay.
+- **Device settings**: Brightness, the **Startup** and **Idle** screensaver
+  toggles and the **Turn off** toggle remain available under
+  **Menu → Display** and are synchronized with the web settings. The web app
+  controls the additional off delay.
 - **Wake behaviour**: Touching the dark panel, changing the scale load or
   starting a grind wakes it. The first wake touch is consumed so it cannot
   accidentally press the control underneath. Lift your finger after waking
   the panel, then use the next touch normally.
+- **Black screen (V2 boards)**: A sagging supply can leave the AMOLED panel
+  black while the grinder itself keeps running. Switching the grinder off
+  and on brings it back. The firmware follows the panel's frame signal and
+  shows under **Settings → System & updates** on the web page when the panel
+  has stopped. It resends the panel's setup while the display is on, and
+  with **Menu → Display → Turn off** enabled it sets the panel up from scratch each
+  time the display wakes. See
+  [Troubleshooting](TROUBLESHOOTING.md#display-goes-black-while-the-grinder-keeps-working)
+  for the cause and what to do about it.
 - **Startup behavior**: On normal Ready boots, the image is drawn early while the full UI initializes, then the regular timed screensaver overlay takes over.
-- **OTA behavior**: During BLE OTA updates and OTA failure warnings, the screensaver is disabled so progress and recovery prompts stay visible.
+- **Wi-Fi and the power supply**: Wi-Fi is the board's largest load, and the
+  grinder's own supply has little to spare for it. **Menu → Wi-Fi → Pause**
+  switches Wi-Fi off from the start of a grind until about 15 seconds after
+  it; the web page and Home Assistant lose the grinder for that time and
+  find it again by themselves. It is off as shipped and switches itself on
+  after a grinder has restarted on a brownout. **Enabled** switches Wi-Fi off
+  altogether until you switch it on again for the web page, Home Assistant
+  or an update. See
+  [Troubleshooting](TROUBLESHOOTING.md#display-goes-black-while-the-grinder-keeps-working).
+- **Firmware updates**: While firmware is uploaded from the web page or over Bluetooth the display stays dark, to spare the grinder's power supply, and a touch does not wake it. Progress shows on the web page or in the upload tool, and the grinder restarts when the upload is done. An update started from the grinder's own menu shows its progress on the display. An update failure warning keeps the display on.
 
 ---
 

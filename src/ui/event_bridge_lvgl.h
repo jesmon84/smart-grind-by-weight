@@ -66,6 +66,8 @@ public:
         SCREENSAVER_STARTUP_TOGGLE,
         SCREENSAVER_SLEEP_TOGGLE,
         DISPLAY_OFF_TOGGLE,
+        WIFI_TOGGLE,
+        WIFI_REST_TOGGLE,
         COUNT
     };
 

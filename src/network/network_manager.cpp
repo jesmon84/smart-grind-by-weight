@@ -2,10 +2,12 @@
 
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <time.h>
 
 #include "../config/build_info.h"
 #include "../config/constants.h"
+#include "../system/health_counters.h"
 
 // wifi_join_failure.h mirrors these ESP-IDF codes so it can be tested on a desktop.
 namespace reason = wifi_disconnect_reason;
@@ -58,7 +60,11 @@ void SmartGrindNetworkManager::init(Preferences* preferences) {
 }
 
 void SmartGrindNetworkManager::update() {
-    if (!initialized_.load() || !enabled_.load()) return;
+    if (!initialized_.load()) return;
+    apply_enable_request();
+    if (!enabled_.load()) return;
+    apply_radio_rest();
+    if (state() == NetworkState::WIFI_RESTING) return;
 
     const wl_status_t wifi_status = WiFi.status();
     if (wifi_status == WL_CONNECTED) {
@@ -95,6 +101,49 @@ void SmartGrindNetworkManager::update() {
     } else if (state() == NetworkState::WIFI_RETRY_WAIT && elapsed_ms >= RETRY_DELAY_MS) {
         begin_connection();
     }
+}
+
+void SmartGrindNetworkManager::apply_enable_request() {
+    const int8_t request = enable_request_.exchange(-1);
+    if (request < 0) return;
+    const bool enable = request == 1;
+    if (enable == enabled_.load()) return;
+    const bool stored = set_enabled(enable);
+    LOG_BLE("[WIFI] Switched %s%s\n", enable ? "on" : "off",
+            stored ? "" : " (the choice could not be stored)");
+}
+
+// Leaves the joined network for the length of a grind and joins it again
+// afterwards (see radio_rest_policy.h). A station that is not connected has
+// its radio powered down. Only a station that has joined or is joining rests;
+// the setup network is left alone.
+void SmartGrindNetworkManager::apply_radio_rest() {
+    const NetworkState current = state();
+    if (radio_rest_wanted_.load()) {
+        if (current != NetworkState::WIFI_CONNECTED && current != NetworkState::WIFI_CONNECTING &&
+            current != NetworkState::WIFI_RETRY_WAIT) {
+            return;
+        }
+        if (mdns_started_) {
+            MDNS.end();
+            mdns_started_ = false;
+        }
+        WiFi.setAutoReconnect(false);
+        // Asked of the driver itself: WiFi.disconnect() does nothing for a
+        // station that is still joining, and that attempt has to end too.
+        esp_wifi_disconnect();
+        set_state(NetworkState::WIFI_RESTING);
+        LOG_BLE("[WIFI] Radio off for the grind\n");
+    } else if (current == NetworkState::WIFI_RESTING) {
+        LOG_BLE("[WIFI] Radio back on after the grind\n");
+        begin_connection();
+    }
+}
+
+bool SmartGrindNetworkManager::set_rest_while_grinding(bool rest) {
+    if (!preferences_) return false;
+    rest_while_grinding_.store(rest);
+    return preferences_->putBool("wifi_rest", rest) != 0;
 }
 
 bool SmartGrindNetworkManager::set_enabled(bool enabled) {
@@ -192,6 +241,10 @@ String SmartGrindNetworkManager::ip_address() const {
     return is_connected() ? WiFi.localIP().toString() : String();
 }
 
+int SmartGrindNetworkManager::rssi_dbm() const {
+    return is_connected() ? static_cast<int>(WiFi.RSSI()) : 0;
+}
+
 String SmartGrindNetworkManager::join_failure_summary() const {
     const WifiJoinFailure failure = last_join_failure();
     if (failure == WifiJoinFailure::NONE) return String();
@@ -206,6 +259,14 @@ String SmartGrindNetworkManager::join_failure_explanation() const {
 
 void SmartGrindNetworkManager::load_settings() {
     enabled_.store(preferences_ && preferences_->getBool("wifi_on", true));
+    // A grinder that has restarted on a brownout has a supply too weak for a
+    // grind with the radio on, so there the rest is on until the user says
+    // otherwise.
+    const bool rest_by_default = NET_WIFI_REST_WHILE_GRINDING_DEFAULT ||
+                                 health_counters.brownout_restarts() > 0;
+    rest_while_grinding_.store(preferences_ && preferences_->isKey("wifi_rest")
+                                   ? preferences_->getBool("wifi_rest", rest_by_default)
+                                   : rest_by_default);
     ssid_ = preferences_ ? preferences_->getString("wifi_ssid", "") : String();
     password_ = preferences_ ? preferences_->getString("wifi_pass", "") : String();
     hostname_ = preferences_ ? sanitize_hostname(preferences_->getString("wifi_host", "")) : String();

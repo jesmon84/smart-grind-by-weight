@@ -420,33 +420,39 @@ bool check_result_timer_layout(lv_display_t* display) {
         screen->update_result_timer(nullptr);
         if (!lv_obj_has_flag(timer, LV_OBJ_FLAG_HIDDEN)) all_ok = false;
 
-        // The removal stop's error screen must fit without scrolling and keep
-        // its text clear of the button.
-        screen->update_profile_name("STOPPED");
-        screen->update_target_weight_text("Portafilter removed");
-        screen->set_outcome(GrindScreenOutcome::FAILED);
-        lv_refr_now(display);
-        lv_obj_t* root = screen->get_screen();
-        // The circle layout overhangs the display on purpose and cannot scroll.
-        bool error_ok = !lv_obj_has_flag(root, LV_OBJ_FLAG_SCROLLABLE) ||
-                        (lv_obj_get_scroll_top(root) <= 0 && lv_obj_get_scroll_bottom(root) <= 0);
-        int32_t lowest_text_y = 0;
-        for (uint32_t c = 0; c < lv_obj_get_child_count(root); ++c) {
-            lv_obj_t* child = lv_obj_get_child(root, static_cast<int32_t>(c));
-            if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
-            if (!lv_obj_check_type(child, &lv_label_class) &&
-                !lv_obj_check_type(child, &lv_spangroup_class)) continue;
-            lv_area_t area;
-            lv_obj_get_coords(child, &area);
-            lowest_text_y = std::max(lowest_text_y, static_cast<int32_t>(area.y2));
-            if (area.y1 < 0 || area.y2 + 4 > button_area.y1) error_ok = false;
+        // The error screens of a removal stop and of a timeout must fit
+        // without scrolling and keep their text clear of the button.
+        const char* const error_screens[][2] = {
+            {"STOPPED", "Portafilter removed"},
+            {"TIMEOUT", "Target not reached"},
+        };
+        for (const auto& error_screen : error_screens) {
+            screen->update_profile_name(error_screen[0]);
+            screen->update_target_weight_text(error_screen[1]);
+            screen->set_outcome(GrindScreenOutcome::FAILED);
+            lv_refr_now(display);
+            lv_obj_t* root = screen->get_screen();
+            // The circle layout overhangs the display on purpose and cannot scroll.
+            bool error_ok = !lv_obj_has_flag(root, LV_OBJ_FLAG_SCROLLABLE) ||
+                            (lv_obj_get_scroll_top(root) <= 0 && lv_obj_get_scroll_bottom(root) <= 0);
+            int32_t lowest_text_y = 0;
+            for (uint32_t c = 0; c < lv_obj_get_child_count(root); ++c) {
+                lv_obj_t* child = lv_obj_get_child(root, static_cast<int32_t>(c));
+                if (lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
+                if (!lv_obj_check_type(child, &lv_label_class) &&
+                    !lv_obj_check_type(child, &lv_spangroup_class)) continue;
+                lv_area_t area;
+                lv_obj_get_coords(child, &area);
+                lowest_text_y = std::max(lowest_text_y, static_cast<int32_t>(area.y2));
+                if (area.y1 < 0 || area.y2 + 4 > button_area.y1) error_ok = false;
+            }
+            std::printf("[result-timer] %s \"%s\" error screen lowest text y=%d scroll=%d/%d %s\n", names[i],
+                        error_screen[1], static_cast<int>(lowest_text_y),
+                        static_cast<int>(lv_obj_get_scroll_top(root)),
+                        static_cast<int>(lv_obj_get_scroll_bottom(root)), error_ok ? "ok" : "FAIL");
+            all_ok = all_ok && error_ok;
+            screen->set_outcome(GrindScreenOutcome::IN_PROGRESS);
         }
-        std::printf("[result-timer] %s error screen lowest text y=%d scroll=%d/%d %s\n", names[i],
-                    static_cast<int>(lowest_text_y),
-                    static_cast<int>(lv_obj_get_scroll_top(root)),
-                    static_cast<int>(lv_obj_get_scroll_bottom(root)), error_ok ? "ok" : "FAIL");
-        all_ok = all_ok && error_ok;
-        screen->set_outcome(GrindScreenOutcome::IN_PROGRESS);
     }
     if (!all_ok) std::fprintf(stderr, "Result timer layout check failed.\n");
     return all_ok;

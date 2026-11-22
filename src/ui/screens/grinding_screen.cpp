@@ -1,7 +1,11 @@
 #include "grinding_screen.h"
 #include <Preferences.h>
 
-GrindingScreen::GrindingScreen() : current_layout(GrindScreenLayout::MINIMAL_ARC), preferences(nullptr), current_mode(GrindMode::WEIGHT) {
+GrindingScreen::GrindingScreen()
+    : current_layout(GrindScreenLayout::MINIMAL_ARC),
+      saved_layout(GrindScreenLayout::MINIMAL_ARC),
+      preferences(nullptr),
+      current_mode(GrindMode::WEIGHT) {
     // Layout will be loaded in init() when preferences are available
     active_screen = (IGrindingScreen*)&arc_screen; // Default to arc screen
 }
@@ -10,13 +14,14 @@ void GrindingScreen::init(Preferences* prefs) {
     preferences = prefs;
 
     // Load saved layout preference using the provided preferences instance
-    current_layout = GrindScreenLayout::MINIMAL_ARC;
+    saved_layout = GrindScreenLayout::MINIMAL_ARC;
     if (preferences && preferences->isKey("grind_layout")) {
-        const int saved_layout = preferences->getInt("grind_layout", (int)GrindScreenLayout::MINIMAL_ARC);
-        if (saved_layout >= 0 && saved_layout < (int)GrindScreenLayout::COUNT) {
-            current_layout = (GrindScreenLayout)saved_layout;
+        const int stored_layout = preferences->getInt("grind_layout", (int)GrindScreenLayout::MINIMAL_ARC);
+        if (stored_layout >= 0 && stored_layout < (int)GrindScreenLayout::COUNT) {
+            saved_layout = (GrindScreenLayout)stored_layout;
         }
     }
+    current_layout = saved_layout;
 
     // Set active screen based on loaded layout
     active_screen = screen_for_layout(current_layout);
@@ -34,7 +39,7 @@ IGrindingScreen* GrindingScreen::screen_for_layout(GrindScreenLayout layout) {
     }
 }
 
-void GrindingScreen::set_layout(GrindScreenLayout layout) {
+void GrindingScreen::show_layout(GrindScreenLayout layout) {
     if (current_layout == layout) return;
 
     bool was_visible = is_visible();
@@ -52,8 +57,14 @@ void GrindingScreen::set_layout(GrindScreenLayout layout) {
     if (was_visible) {
         active_screen->show();
     }
+}
+
+void GrindingScreen::set_layout(GrindScreenLayout layout) {
+    show_layout(layout);
+    if (saved_layout == layout) return;
 
     // Save preference using the provided preferences instance
+    saved_layout = layout;
     if (preferences) {
         preferences->putInt("grind_layout", (int)layout);
     }
@@ -61,7 +72,11 @@ void GrindingScreen::set_layout(GrindScreenLayout layout) {
 
 void GrindingScreen::cycle_layout() {
     const int next = ((int)current_layout + 1) % (int)GrindScreenLayout::COUNT;
-    set_layout((GrindScreenLayout)next);
+    show_layout((GrindScreenLayout)next);
+}
+
+void GrindingScreen::restore_saved_layout() {
+    show_layout(saved_layout);
 }
 
 // Delegate all calls to active screen

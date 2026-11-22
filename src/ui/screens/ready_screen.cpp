@@ -219,8 +219,8 @@ void ReadyScreen::update_network_status() {
 #else
     switch (network_manager.state()) {
         case NetworkState::WIFI_DISABLED:
-            status = "WI-FI DISABLED";
-            detail = "Enable Wi-Fi in Settings.";
+            status = "WI-FI OFF";
+            detail = "Switch it on in Menu, Wi-Fi.";
             break;
         case NetworkState::WIFI_NO_CREDENTIALS:
         case NetworkState::WIFI_SETUP_REQUIRED:
@@ -239,6 +239,10 @@ void ReadyScreen::update_network_status() {
         case NetworkState::WIFI_RETRY_WAIT:
             status = "WI-FI INTERRUPTED";
             detail = "Reconnecting automatically...";
+            break;
+        case NetworkState::WIFI_RESTING:
+            status = "WI-FI PAUSED";
+            detail = "Back after the grind.";
             break;
         case NetworkState::WIFI_SETUP_AP: {
             status = "CONNECT WI-FI";

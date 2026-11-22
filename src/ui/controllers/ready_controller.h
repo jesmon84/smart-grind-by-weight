@@ -1,6 +1,7 @@
 #pragma once
 #include <lvgl.h>
 #include "../event_bridge_lvgl.h"
+#include "../../system/profile_settle_policy.h"
 #include "../../system/scale_readiness.h"
 
 class UIManager;
@@ -36,4 +37,6 @@ private:
     bool status_shown_ = false;
     ScaleReadiness shown_readiness_ = ScaleReadiness::STARTING;
     bool shown_weight_mode_ = false;
+    // Decides when the profile in view becomes the one stored for a restart.
+    ProfileSettleTracker profile_settle_;
 };

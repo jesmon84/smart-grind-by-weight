@@ -1,3 +1,5 @@
+// The simulator builds in Release mode, so make sure the checks stay compiled in.
+#undef NDEBUG
 #include <cassert>
 #include <cstdint>
 

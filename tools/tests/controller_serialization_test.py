@@ -83,10 +83,14 @@ public:
     GrinderPurgeMode grinder_purge_mode_for_session{};
     float grinder_purge_amount_g_for_session = 1;
     char last_error_message[32]{};
+    char last_error_title[16]{};
     Strategy* active_strategy = nullptr;
     GrindSessionDescriptor session_descriptor{};
     int strategy_context = 0;
+    unsigned idle_scale_checks = 0;
     void queue_flash_operation(const FlashOpRequest&) {}
+    void queue_manual_runtime(uint32_t) {}
+    void track_resting_scale(unsigned long) { ++idle_scale_checks; }
     template<class... Args> void queue_log_message(Args...) {}
     void switch_phase(GrindPhase next, const GrindLoopData& = {}) { phase = next; }
     void stop_grind();
@@ -141,6 +145,8 @@ int main() {
     operation_interlock().release(other_operation);
     controller.update(); // a later tick must not resurrect the stopped motor
     assert(!motor.motor);
+    // An idle tick only watches the resting scale for the vessel's weight.
+    assert(controller.idle_scale_checks == 1);
 
     // Snapshot is an owned copy, not a reference invalidated by the next start.
     static_assert(!std::is_reference_v<decltype(controller.get_session_descriptor())>);

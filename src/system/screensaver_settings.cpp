@@ -2,8 +2,11 @@
 
 #include <Preferences.h>
 #include <algorithm>
+#include <atomic>
 
 namespace {
+
+std::atomic<uint32_t> timing_revision_counter{0};
 
 constexpr const char* kPrefsNamespace = "screensaver";
 constexpr const char* kIdleTimeoutKey = "idle_timeout_s";
@@ -115,11 +118,17 @@ bool save_timing(uint16_t idle_timeout_s, uint8_t startup_timeout_s,
     size_t display_off_written = prefs.putBool(kDisplayOffEnabledKey, display_off_enabled);
     size_t display_off_delay_written = prefs.putUShort(kDisplayOffDelayKey, display_off_delay_s);
     prefs.end();
+    // Even a failed save can have changed some of the stored values.
+    timing_revision_counter.fetch_add(1);
 
     return idle_written == sizeof(uint16_t) &&
            startup_written == sizeof(uint8_t) &&
            display_off_written == sizeof(bool) &&
            display_off_delay_written == sizeof(uint16_t);
+}
+
+uint32_t timing_revision() {
+    return timing_revision_counter.load();
 }
 
 uint32_t idle_timeout_ms(const ScreensaverTimingSettings& settings) {

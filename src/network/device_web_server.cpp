@@ -21,6 +21,9 @@
 #include "../hardware/hardware_manager.h"
 #include "../logging/grind_logging.h"
 #include "../logging/diagnostic_log.h"
+#include "../system/health_counters.h"
+#include "../system/power_saver.h"
+#include "../system/reset_reason.h"
 #include "network_manager.h"
 #include "device_api.h"
 #include "ota_stream.h"
@@ -35,6 +38,7 @@ const char* network_state_name(NetworkState state) {
         case NetworkState::WIFI_RETRY_WAIT: return "retry_wait";
         case NetworkState::WIFI_SETUP_REQUIRED: return "setup_required";
         case NetworkState::WIFI_SETUP_AP: return "setup_ap";
+        case NetworkState::WIFI_RESTING: return "resting";
     }
     return "unknown";
 }
@@ -91,9 +95,12 @@ constexpr uint32_t OTA_PREPARE_TIMEOUT_MS = 15000;
 constexpr uint32_t OTA_READY_WINDOW_MS = 30000;
 constexpr size_t OTA_MIN_INTERNAL_HEAP = 64U * 1024U;
 constexpr size_t OTA_DOWNLOAD_TASK_STACK = 12U * 1024U;
-constexpr uint32_t UPDATE_CHECK_INTERVAL_MS = 30U * 60U * 1000U;
-constexpr uint32_t UPDATE_CHECK_RETRY_MS = 5U * 60U * 1000U;
+// When the online update check runs is decided in power_saving_policy.h. It
+// runs at the slow processor clock, so its secure connection gets longer to
+// come up than it needs at full speed.
 constexpr size_t UPDATE_CHECK_TASK_STACK = 10U * 1024U;
+constexpr uint32_t UPDATE_CHECK_HANDSHAKE_TIMEOUT_S = 30U;
+constexpr uint32_t UPDATE_CHECK_TIMEOUT_MS = 20000U;
 // GitHub Pages mirrors every published release beneath this versioned path.
 // Using the mirror avoids the github.com -> release-assets.githubusercontent.com
 // redirect during a memory-constrained TLS session while retaining the exact
@@ -241,11 +248,10 @@ void DeviceWebServer::update() {
     }
 
     const uint32_t now = millis();
-    const uint32_t interval = firmware_update_state_.load() == FirmwareUpdateState::FAILED
-                                  ? UPDATE_CHECK_RETRY_MS
-                                  : UPDATE_CHECK_INTERVAL_MS;
-    const uint32_t last_check = last_firmware_update_check_ms_.load();
-    const bool check_due = last_check == 0 || now - last_check >= interval;
+    const bool check_due = update_check_due(
+        now, last_firmware_update_check_ms_.load(),
+        firmware_update_state_.load() == FirmwareUpdateState::FAILED,
+        power_saver.display_resting());
     const bool check_safe = network_manager.is_connected() && !is_ota_active() &&
                             ota_preparation_state_.load() == OtaPreparationState::IDLE &&
                             (!grind_controller_ || !grind_controller_->is_active()) &&
@@ -294,6 +300,7 @@ bool DeviceWebServer::install_available_update() {
     }
     if (!request_ota_preparation()) return false;
     on_device_update_pending_.store(true);
+    ota_started_on_device_.store(true);
     return true;
 }
 
@@ -310,13 +317,13 @@ void DeviceWebServer::perform_firmware_update_check() {
         x509_crt_imported_bundle_bin_start,
         static_cast<size_t>(x509_crt_imported_bundle_bin_end -
                             x509_crt_imported_bundle_bin_start));
-    secure_client.setTimeout(10000);
-    secure_client.setHandshakeTimeout(10);
+    secure_client.setTimeout(UPDATE_CHECK_TIMEOUT_MS);
+    secure_client.setHandshakeTimeout(UPDATE_CHECK_HANDSHAKE_TIMEOUT_S);
 
     HTTPClient http;
     http.useHTTP10(true);
-    http.setConnectTimeout(10000);
-    http.setTimeout(10000);
+    http.setConnectTimeout(UPDATE_CHECK_TIMEOUT_MS);
+    http.setTimeout(UPDATE_CHECK_TIMEOUT_MS);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setUserAgent("SmartGrind-UpdateCheck/1");
     http.addHeader("Cache-Control", "no-cache");
@@ -399,6 +406,7 @@ void DeviceWebServer::recover_from_ota_failure() {
     const std::lock_guard<std::recursive_mutex> ota_lock(ota_mutex_);
     if (ota_active_.load()) return;
     on_device_update_pending_.store(false);
+    ota_started_on_device_.store(false);
     ota_preparation_state_.store(OtaPreparationState::IDLE);
     if (ota_bluetooth_stopped_.exchange(false)) {
         // Arduino BLE retains its server singleton across deinit(false). Re-enabling
@@ -422,23 +430,62 @@ uint8_t DeviceWebServer::ota_progress_percent() const {
 }
 
 void DeviceWebServer::configure_routes() {
-    server_.on(AsyncURIMatcher::exact("/api/v1/status"), HTTP_GET, [](AsyncWebServerRequest* request) {
+    server_.on(AsyncURIMatcher::exact("/api/v1/status"), HTTP_GET, [this](AsyncWebServerRequest* request) {
         AsyncResponseStream* response = request->beginResponseStream("application/json");
         const String hostname = json_escape(network_manager.hostname());
         const String device_id = json_escape(network_manager.device_id());
         const String network_name = json_escape(network_manager.network_name());
         const String ip_address = json_escape(network_manager.ip_address());
+        // The display and touch counters show what was done to keep the panel
+        // and the touch bus working since the last start. Brownout restarts
+        // and panel faults are counted across power cycles.
+        DisplayManager* display = hardware_manager_ ? hardware_manager_->get_display() : nullptr;
+        TouchDriver* touch = display ? display->get_touch_driver() : nullptr;
+        const auto panel_resets = [display](PanelResetCause cause) {
+            return static_cast<unsigned long>(display ? display->get_panel_reset_count(cause) : 0);
+        };
+        const char* frame_signal = display && DisplayManager::panel_reset_supported()
+            ? panel_frame_state_name(display->get_panel_frame_state())
+            : "absent";
+        // What was running just before the last brownout restart on record.
+        char last_brownout[224] = "null";
+        const RunSnapshot brownout = health_counters.last_brownout();
+        if (brownout.valid()) {
+            snprintf(last_brownout, sizeof(last_brownout),
+                     "{\"uptime_s\":%lu,\"grind_phase\":\"%s\",\"motor_on\":%s,\"wifi\":\"%s\","
+                     "\"display_on\":%s,\"brightness\":%u,\"cpu_mhz\":%u}",
+                     static_cast<unsigned long>(brownout.uptime_ms / 1000U),
+                     grind_controller_
+                         ? grind_controller_->phase_name(static_cast<GrindPhase>(brownout.grind_phase))
+                         : "UNKNOWN",
+                     brownout.motor_on ? "true" : "false",
+                     network_state_name(static_cast<NetworkState>(brownout.wifi_state)),
+                     brownout.display_on ? "true" : "false",
+                     static_cast<unsigned>(brownout.brightness),
+                     static_cast<unsigned>(brownout.cpu_mhz));
+        }
         response->printf(
             "{\"api\":\"v1\",\"device\":{\"id\":\"%s\",\"model\":\"ESP32-S3-Touch-AMOLED-1.64\",\"hardware_revision\":\"%s\"},"
-            "\"capabilities\":{\"protocol\":1,\"transport\":\"websocket\",\"path\":\"/ws\",\"state_interval_ms\":100,"
+            "\"capabilities\":{\"protocol\":1,\"transport\":\"websocket\",\"path\":\"/ws\",\"state_interval_ms\":%u,"
+            "\"idle_state_interval_ms\":%u,\"idle_keepalive_interval_ms\":%u,"
             "\"commands\":[\"start\",\"start_manual\",\"stop\",\"dismiss\",\"tare\",\"select_profile\",\"set_mode\"]},"
             "\"firmware\":{\"version\":\"%s\",\"build\":%d,\"commit\":\"%s\"},"
-            "\"network\":{\"state\":\"%s\",\"hostname\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\"},"
-            "\"system\":{\"uptime_ms\":%lu,\"free_heap\":%u,\"free_internal_heap\":%u,"
+            "\"network\":{\"state\":\"%s\",\"hostname\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
+            "\"system\":{\"uptime_ms\":%lu,\"reset_reason\":\"%s\",\"brownout_restarts\":%lu,"
+            "\"last_brownout\":%s,"
+            "\"cpu_mhz\":%u,\"free_heap\":%u,\"free_internal_heap\":%u,"
             "\"largest_internal_block\":%u,\"free_psram\":%u},"
+            "\"display\":{\"panel_on\":%s,\"brightness\":%u,\"panel_refreshes\":%lu,"
+            "\"reset_supported\":%s,\"frame_signal\":\"%s\","
+            "\"panel_resets\":{\"display_off\":%lu,\"frame_lost\":%lu,\"requested\":%lu},"
+            "\"faults\":%lu,\"recoveries\":%lu},"
+            "\"touch\":{\"bus_resets\":%lu,\"read_errors\":%lu},"
             "\"ota\":{\"active\":%s,\"preparing\":%s,\"ready\":%s,\"progress\":%u,\"failed\":%s}}",
             device_id.c_str(),
             HW_DISPLAY_REVISION,
+            static_cast<unsigned int>(DeviceApi::ACTIVE_STATE_INTERVAL_MS),
+            static_cast<unsigned int>(DeviceApi::IDLE_STATE_INTERVAL_MS),
+            static_cast<unsigned int>(DeviceApi::IDLE_KEEPALIVE_INTERVAL_MS),
             BUILD_FIRMWARE_VERSION,
             BUILD_NUMBER,
             GIT_COMMIT_ID,
@@ -446,11 +493,28 @@ void DeviceWebServer::configure_routes() {
             hostname.c_str(),
             network_name.c_str(),
             ip_address.c_str(),
+            network_manager.rssi_dbm(),
             static_cast<unsigned long>(millis()),
+            reset_reason_name(esp_reset_reason()),
+            static_cast<unsigned long>(health_counters.brownout_restarts()),
+            last_brownout,
+            static_cast<unsigned int>(power_saver.cpu_mhz()),
             static_cast<unsigned int>(ESP.getFreeHeap()),
             static_cast<unsigned int>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
             static_cast<unsigned int>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
             static_cast<unsigned int>(ESP.getFreePsram()),
+            display && display->is_panel_powered_on() ? "true" : "false",
+            static_cast<unsigned int>(display ? display->get_brightness_level() : 0),
+            static_cast<unsigned long>(display ? display->get_panel_refresh_count() : 0),
+            DisplayManager::panel_reset_supported() ? "true" : "false",
+            frame_signal,
+            static_cast<unsigned long>(display ? display->get_panel_off_reset_count() : 0),
+            panel_resets(PanelResetCause::FRAME_LOST),
+            panel_resets(PanelResetCause::REQUESTED),
+            static_cast<unsigned long>(health_counters.panel_faults()),
+            static_cast<unsigned long>(health_counters.panel_recoveries()),
+            static_cast<unsigned long>(touch ? touch->get_bus_reset_count() : 0),
+            static_cast<unsigned long>(touch ? touch->get_read_error_count() : 0),
             device_web_server.is_ota_active() ? "true" : "false",
             device_web_server.is_ota_preparing() ? "true" : "false",
             device_web_server.is_ota_ready() ? "true" : "false",
@@ -462,6 +526,30 @@ void DeviceWebServer::configure_routes() {
 
     server_.on(AsyncURIMatcher::exact("/health"), HTTP_GET, [](AsyncWebServerRequest* request) {
         request->send(200, "text/plain", "ok");
+    });
+
+    // For a screen that is black while the grinder works: resets the display
+    // panel as a restart would, which nothing does by itself while the
+    // display is on and the panel's frame signal runs. The UI task carries it
+    // out.
+    server_.on(AsyncURIMatcher::exact("/api/v1/display/reset"), HTTP_POST, [this](AsyncWebServerRequest* request) {
+        if (!request_origin_allowed(request)) {
+            request->send(403, "application/json", "{\"error\":\"Request origin is not allowed\"}");
+            return;
+        }
+        DisplayManager* display = hardware_manager_ ? hardware_manager_->get_display() : nullptr;
+        if (!display || !DisplayManager::panel_reset_supported()) {
+            request->send(409, "application/json", "{\"error\":\"This display revision cannot be reset\"}");
+            return;
+        }
+        if (!display->is_panel_powered_on()) {
+            request->send(409, "application/json",
+                          "{\"error\":\"The display is switched off. Touch it or put the cup on to wake it.\"}");
+            return;
+        }
+        display->request_panel_reset_from_any_task();
+        LOG_BLE("[WEB] Display reset requested\n");
+        request->send(202, "application/json", "{\"accepted\":true}");
     });
 
     server_.on(AsyncURIMatcher::exact("/api/v1/logs"), HTTP_GET, [](AsyncWebServerRequest* request) {
@@ -787,7 +875,9 @@ void DeviceWebServer::perform_github_ota(const String& tag) {
         static_cast<size_t>(x509_crt_imported_bundle_bin_end -
                             x509_crt_imported_bundle_bin_start));
     secure_client.setTimeout(15000);
-    secure_client.setHandshakeTimeout(15);
+    // A download started from the web page runs at the slow processor clock,
+    // where the secure connection takes longer to come up.
+    secure_client.setHandshakeTimeout(30);
     HTTPClient http;
     http.useHTTP10(true);
     http.setConnectTimeout(15000);

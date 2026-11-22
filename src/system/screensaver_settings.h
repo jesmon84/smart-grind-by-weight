@@ -30,6 +30,9 @@ ScreensaverTimingSettings load_timing();
 bool load_timing_checked(ScreensaverTimingSettings& settings);
 bool save_timing(uint16_t idle_timeout_s, uint8_t startup_timeout_s,
                  bool display_off_enabled, uint16_t display_off_delay_s);
+// Changes every time save_timing() writes, from any task. The display
+// controller compares it to notice new settings without rereading flash.
+uint32_t timing_revision();
 bool is_valid_idle_timeout(uint16_t idle_timeout_s);
 bool is_valid_startup_timeout(uint8_t startup_timeout_s);
 bool is_valid_display_off_delay(uint16_t display_off_delay_s);

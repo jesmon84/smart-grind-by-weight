@@ -7,20 +7,51 @@
 #include "../../config/logging.h"
 #include "../../hardware/display_manager.h"
 #include "../../hardware/hardware_manager.h"
+#include "../../network/device_web_server.h"
 #include "../../system/display_idle_policy.h"
+#include "../../system/power_saver.h"
 #include "../ui_manager.h"
 
 ScreenTimeoutController::ScreenTimeoutController(UIManager* manager)
     : ui_manager_(manager)
     , timing_settings_(ScreensaverSettings::load_timing())
+    , loaded_timing_revision_(ScreensaverSettings::timing_revision())
     , settings_applied_at_ms_(millis())
     , last_weight_activity_ms_(settings_applied_at_ms_)
     , screen_dimmed_(false)
     , panel_off_(false) {}
 
-void ScreenTimeoutController::register_events() {}
+void ScreenTimeoutController::register_events() {
+    if (!ui_manager_ || !ui_manager_->hardware_manager) {
+        return;
+    }
+    // A touch wakes the display from inside the display code, a cycle before
+    // update() hears of it. The processor is at full speed for that redraw
+    // all the same.
+    if (DisplayManager* display = ui_manager_->hardware_manager->get_display()) {
+        display->set_panel_wake_hook([] { power_saver.display_waking(); });
+    }
+}
 
 void ScreenTimeoutController::update() {
+    update_display_state();
+    save_power();
+}
+
+// The processor runs slowly while nobody is using the display (see
+// power_saving_policy.h).
+void ScreenTimeoutController::save_power() {
+    if (!ui_manager_) {
+        return;
+    }
+    const bool grind_active = ui_manager_->grind_controller &&
+                              ui_manager_->grind_controller->is_active();
+    const bool bluetooth_busy = ui_manager_->bluetooth_manager &&
+                                ui_manager_->bluetooth_manager->is_transfer_active();
+    power_saver.update(!screen_dimmed_ && !panel_off_, grind_active, bluetooth_busy);
+}
+
+void ScreenTimeoutController::update_display_state() {
     if (!ui_manager_) {
         return;
     }
@@ -35,13 +66,21 @@ void ScreenTimeoutController::update() {
         return;
     }
 
+    if (firmware_upload_running()) {
+        hold_display_off_for_upload(display);
+        return;
+    }
+    if (upload_hold_) {
+        release_display_after_upload(display);
+    }
+
     if (is_protected_state()) {
         restore_normal_display(display);
         return;
     }
 
     uint32_t now = millis();
-    refresh_settings_if_needed(now);
+    reload_settings_if_saved();
 
     auto* touch_driver = display->get_touch_driver();
     if (!touch_driver) {
@@ -125,7 +164,6 @@ bool ScreenTimeoutController::apply_runtime_settings(bool verify_storage) {
     timing_settings_ = loaded;
     settings_applied_at_ms_ = millis();
     last_weight_activity_ms_ = settings_applied_at_ms_;
-    last_settings_refresh_ms_ = settings_applied_at_ms_;
     LOG_BLE("[DISPLAY] Runtime settings applied; screensaver=%lus panel-off=%s delay=%lus\n",
             static_cast<unsigned long>(timing_settings_.idle_timeout_s),
             timing_settings_.display_off_enabled ? "ON" : "OFF",
@@ -138,16 +176,21 @@ bool ScreenTimeoutController::apply_runtime_settings(bool verify_storage) {
     return true;
 }
 
-void ScreenTimeoutController::refresh_settings_if_needed(uint32_t now_ms) {
-    constexpr uint32_t kRefreshIntervalMs = 5000;
-
-    if (last_settings_refresh_ms_ != 0 &&
-        now_ms - last_settings_refresh_ms_ < kRefreshIntervalMs) {
+// The timing settings can also be saved over Bluetooth, on another task. The
+// revision says when a save happened, so flash is read only then instead of
+// on a timer in the UI loop. Values that cannot be read back keep the ones in
+// use.
+void ScreenTimeoutController::reload_settings_if_saved() {
+    const uint32_t revision = ScreensaverSettings::timing_revision();
+    if (revision == loaded_timing_revision_) {
         return;
     }
+    loaded_timing_revision_ = revision;
 
-    timing_settings_ = ScreensaverSettings::load_timing();
-    last_settings_refresh_ms_ = now_ms;
+    ScreensaverTimingSettings loaded;
+    if (ScreensaverSettings::load_timing_checked(loaded)) {
+        timing_settings_ = loaded;
+    }
 }
 
 void ScreenTimeoutController::restore_normal_display(DisplayManager* display) {
@@ -162,6 +205,11 @@ void ScreenTimeoutController::restore_normal_display(DisplayManager* display) {
             normal = ui_manager_->menu_controller_->get_normal_brightness();
         }
         display->set_brightness(normal);
+        // Nobody saw what happened to the panel while it was dim, and waking
+        // is when a dark one would be noticed. A resend of its setup brings
+        // back a panel that restarted and shows no change on a healthy one. A
+        // panel that was off is set up from scratch below.
+        display->request_panel_refresh();
     }
 
     if (panel_off_ || !display->is_panel_powered_on()) {
@@ -170,6 +218,42 @@ void ScreenTimeoutController::restore_normal_display(DisplayManager* display) {
 
     screen_dimmed_ = false;
     panel_off_ = false;
+}
+
+// True while firmware is being uploaded from the web page or over Bluetooth.
+// An update started on the grinder's own screen does not count: that screen
+// is the only place its progress shows.
+bool ScreenTimeoutController::firmware_upload_running() const {
+    if (device_web_server.is_ota_in_progress() && !device_web_server.is_ota_started_on_device()) {
+        return true;
+    }
+    return ui_manager_ && ui_manager_->bluetooth_manager &&
+           ui_manager_->bluetooth_manager->is_updating();
+}
+
+// A firmware upload is the heaviest load the grinder's supply sees, and the
+// display's share of it can be spared: progress shows on the web page or in
+// the upload tool. The panel sleeps from the start of the upload until the
+// grinder restarts into the new firmware, and a touch does not wake it.
+void ScreenTimeoutController::hold_display_off_for_upload(DisplayManager* display) {
+    if (upload_hold_) {
+        return;
+    }
+    upload_hold_ = true;
+    display->set_wake_on_touch(false);
+    display->set_panel_power(false);
+    panel_off_ = true;
+    LOG_BLE("[DISPLAY] Panel off for the firmware upload\n");
+}
+
+// The upload ended without a restart: it failed or was called off. The
+// display comes back as after any activity, with a fresh idle interval.
+void ScreenTimeoutController::release_display_after_upload(DisplayManager* display) {
+    upload_hold_ = false;
+    display->set_wake_on_touch(true);
+    last_weight_activity_ms_ = millis();
+    restore_normal_display(display);
+    LOG_BLE("[DISPLAY] Panel back on: the firmware upload ended without a restart\n");
 }
 
 bool ScreenTimeoutController::is_protected_state() const {

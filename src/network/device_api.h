@@ -7,6 +7,9 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+#include "../controllers/grind_events.h"
+#include "state_stream_policy.h"
+
 class GrindController;
 class HardwareManager;
 class ProfileController;
@@ -43,6 +46,15 @@ struct DeviceSettingsUpdate {
 
 class DeviceApi {
 public:
+    // How often state is sent to connected clients: quickly while a grind is
+    // running; otherwise only when it has changed, no closer together than
+    // the idle interval, with a keep-alive in between, so an open page leaves
+    // the Wi-Fi radio mostly idle (see state_stream_policy.h). All three are
+    // reported by the status API.
+    static constexpr uint32_t ACTIVE_STATE_INTERVAL_MS = kActiveStateIntervalMs;
+    static constexpr uint32_t IDLE_STATE_INTERVAL_MS = kIdleStateIntervalMs;
+    static constexpr uint32_t IDLE_KEEPALIVE_INTERVAL_MS = kIdleKeepaliveIntervalMs;
+
     void init(AsyncWebServer* server, HardwareManager* hardware,
               GrindController* grind_controller, ProfileController* profile_controller);
     void update();
@@ -74,7 +86,6 @@ private:
     };
 
     static constexpr size_t MAX_CLIENTS = 4;
-    static constexpr uint32_t PUBLISH_INTERVAL_MS = 100;
     static constexpr uint8_t MAX_CONSECUTIVE_BACKPRESSURE_SKIPS = 50;
 
     AsyncWebSocket websocket_{"/ws"};
@@ -97,6 +108,10 @@ private:
     std::atomic<uint32_t> client_ids_[MAX_CLIENTS]{};
     std::atomic<uint8_t> backpressure_skips_[MAX_CLIENTS]{};
     uint32_t last_publish_ms_ = 0;
+    uint32_t last_publish_check_ms_ = 0;
+    uint32_t last_idle_check_ms_ = 0;
+    GrindPhase last_published_phase_ = GrindPhase::IDLE;
+    LiveState last_sent_state_{};
     std::atomic<uint32_t> sequence_{0};
     std::atomic<bool> settings_cache_dirty_{false};
     bool initialized_ = false;
@@ -118,7 +133,10 @@ private:
     void set_settings_result(uint32_t id, const char* status);
     const char* settings_result(uint32_t id);
     void refresh_settings_cache();
+    LiveState capture_live_state();
+    String format_state_message(const LiveState& state);
     String build_state_message();
+    bool has_clients() const;
 };
 
 extern DeviceApi device_api;

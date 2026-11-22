@@ -169,6 +169,15 @@ public:
     float get_display_weight();                              // 250ms + asymmetric filter - for UI
     float get_weight_high_latency() const;                   // 250ms window - for final measurements
     float get_weight_smoothed(uint32_t window_ms) const;     // Trimmed mean over a caller-chosen window
+    // Averaged level in grams that taring does not move, so the difference of
+    // two such levels is a weight even across a tare. NAN without a reading.
+    float get_untared_level(uint32_t window_ms) const;
+    // The weight on a scale that vibration keeps from reading still: the
+    // average of the window, given only while its readings look like one
+    // weight being shaken. False with a hand on the vessel (the readings
+    // scatter too widely) or while the weight is changing (the average is on
+    // the move).
+    bool get_shaken_weight(uint32_t window_ms, float* weight_out) const;
     bool get_weight_delta(uint32_t window_ms, float* delta_out,
                           int* sample_count_out = nullptr,
                           uint32_t* span_ms_out = nullptr) const;
@@ -196,6 +205,8 @@ public:
         const uint32_t now = millis();
         return static_cast<uint32_t>(now - last_sample) < 500U;
     }
+    // When the newest sample arrived; changes once per sample.
+    uint32_t get_last_sample_ms() const { return last_sample_ms_.load(); }
     float get_calibration_factor();                          
     int32_t get_zero_offset() const { return tare_offset; }
     bool is_initialized();                                   

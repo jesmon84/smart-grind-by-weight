@@ -6,6 +6,164 @@ line. Earlier release history remains available in the original project's
 
 ## [Unreleased]
 
+### Grinding on a vibrating bench
+
+- New shaky-bench handling for a grinder that has to stand on a bench that
+  vibrates, for instance next to a running 3D printer. There the scale never
+  reads still, and a grind waits for a still reading until it stops after 60
+  seconds with "Timeout:PULS", the coffee already in the basket, whether it
+  is short of the target or over it. With the handling on, the waits after
+  taring, after the prime and after the motor stops end after a few seconds.
+  A grind that finds its bench shaking (the scale comes to rest neither after
+  taring nor after the prime) then takes the average of the last two seconds
+  of readings for a correction or the result, which stays accurate because
+  vibration averages out.
+- The handling is off unless the firmware is built with
+  `-DGRIND_SHAKY_BENCH_DEFAULT=1`; without it every wait is for a still
+  reading, as before. A hand resting on the portafilter also keeps the scale
+  from reading still, and unlike vibration it does not average out. From the
+  readings alone the two cannot always be told apart, so with the handling
+  on a hand kept on the portafilter can be weighed as coffee.
+- With the handling on, an average is used only while the readings look like
+  one weight being shaken: little scatter, no drift and, for a correction,
+  not below what the grind has already weighed. The zero taken at the start
+  is put right from the same average, by no more than 0.15 g, and coffee
+  only counts as flowing once the averaged weight has risen. A shaken
+  reading could otherwise be taken for the first grounds and stop the motor
+  too late.
+- A grind that runs into its 60-second limit shows **TIMEOUT** with "Target
+  not reached" (or "Could not tare" when the scale never came to rest for
+  its zero), in place of "Timeout:" and four letters of an internal phase
+  name. The phase is still written to the diagnostic log.
+
+### Portafilter removal
+
+- The stop when the portafilter is lifted off now works on every grind. It
+  used to be switched off whenever the scale had last been zeroed with the
+  portafilter on, which is every weight grind after the first one following
+  power-up. The grinder now carries the portafilter's weight forward from
+  the zero of one grind to the next. If it is switched on with the
+  portafilter already on the scale, the check starts once the portafilter
+  has been lifted off for a second.
+- A single bad scale reading can no longer stop a grind as a removal: the
+  drop has to show in three scale readings in a row.
+- In purge mode the portafilter can be lifted as soon as the prime stops,
+  without waiting for the prompt.
+
+### Display recovery (V2)
+
+- The display can go black and stay black until the grinder is switched off
+  and on, while the grinder itself keeps working. The cause is the grinder's
+  5 V supply sagging under the load of this firmware with Wi-Fi on, most of
+  all during a firmware upload; see
+  [Troubleshooting](docs/TROUBLESHOOTING.md#display-goes-black-while-the-grinder-keeps-working).
+  Firmware cannot restart a panel that lacks voltage: in the blackouts
+  examined, neither a reset of the panel nor a restart of the grinder
+  brought it back, only switching the grinder off and on did. The firmware
+  now notices the fault, reports it, and brings back a panel that has only
+  lost its setup. V1 boards are unchanged.
+- The firmware follows the panel's frame signal and so knows when the panel
+  has stopped. **Settings → System & updates** on the web page shows the
+  state of the signal and counts the faults across power cycles.
+- While the display is on the panel's setup is resent every three seconds,
+  and at once when the screen is touched. A healthy panel shows no change,
+  and one that restarted cleanly comes back.
+- While the display is on, the panel is reset only when its frame signal
+  has stopped and a resend did not bring it back, or from **Reset display**
+  under **Settings → System & updates** (`POST /api/v1/display/reset`). That
+  blanks the screen for about a quarter of a second, and waits until nobody
+  has touched the screen for a second and a half, because the touch
+  controller shares the reset line. A screen showing a picture is never
+  reset as a precaution.
+- With **Menu → Display → Turn off** enabled, switching the display off puts the
+  panel to sleep and resets it, and waking sets it up from scratch as at
+  power-on. None of that shows: the picture appears complete, a fraction of
+  a second after the wake.
+- The touch controller's bus is reset when it stops answering, so touch
+  recovers without a power cycle. Readings that cannot come from the touch
+  controller are ignored instead of being taken as a touch.
+- The same web section shows the reason for the last restart, how many
+  restarts so far were brownouts (the supply falling below what the ESP32
+  needs), the state of the panel's frame signal and what was done to keep
+  the panel and the touch bus working. The brownout and panel fault counts
+  are kept across power cycles. **Connectivity** shows the Wi-Fi signal
+  strength. `GET /api/v1/status` reports the same values.
+
+### Remembered choices
+
+- After a restart the grinder returns to the profile you last stayed on or
+  ground with. Swiping across Custom on the way to the Wi-Fi or menu page no
+  longer makes Custom the profile it starts with.
+- Tapping the grind screen switches its layout for that grind only. Every
+  grind starts with the layout chosen in **Menu → Grind Settings → Grind
+  Screen**; a tap no longer replaces that choice.
+
+### Menu text
+
+- Text no longer runs into other things or off the screen in the grinder's
+  menu: page titles are smaller so that "Grind Settings" and "Lifetime
+  Stats" clear the back arrow; the Display switches are **Idle** and
+  **Turn off**, each under a sentence that says what it does; slider
+  captions are shorter and one size smaller (**Threshold**, **Latency**,
+  **Ratio**); section titles are shorter (**Mode**, **Motor**, **Coast**,
+  **Load Cell**); the three selector rows are as wide as the other rows;
+  and **Reset Diagnostics** is **Clear Warnings**.
+- The live weight under **System Info** no longer shows its unit twice, the
+  Scale page no longer slides sideways, and the Wi-Fi page hides the update
+  text while firmware is being received.
+
+### Lower power draw
+
+The grinder's 5 V supply has little to spare for this firmware with Wi-Fi on,
+and a sagging supply is what blacks out the V2 display. The firmware now
+draws less at the times when that costs nothing.
+
+- **Menu → Wi-Fi → Pause** switches Wi-Fi off from the start of a grind
+  until about 15 seconds after it, which takes the radio's load off the
+  supply while the motor runs. The web page and Home Assistant lose the
+  grinder for that time and find it again by themselves. The switch is off
+  as shipped and turns itself on once a grinder has restarted on a brownout,
+  until the user chooses otherwise.
+- **Menu → Wi-Fi → Enabled** switches Wi-Fi off altogether, and on again.
+- After a brownout restart the grinder records what was running when the
+  supply gave way: the grind phase, whether the motor was on, what Wi-Fi was
+  doing, the display and the processor clock. **Last restart** on the web
+  page shows it, and `GET /api/v1/status` reports it as
+  `system.last_brownout`.
+- During a firmware upload from the web page or over Bluetooth the display
+  sleeps, and a touch does not wake it; progress shows on the web page or in
+  the upload tool. An update started on the grinder's own screen still shows
+  its progress there.
+- The processor runs at 80 MHz instead of 240 MHz while the display is
+  dimmed or off, and at full speed again the moment the display wakes, a
+  grind starts or Bluetooth moves data. `GET /api/v1/status` reports the
+  clock as `system.cpu_mhz`.
+- The first online update check waits half an hour after a start instead of
+  two minutes, and a check only starts while the display is dimmed or off.
+- An idle grinder sends an open web page or Home Assistant a new reading
+  only when something has changed, and a keep-alive every 2.5 seconds
+  (`capabilities.idle_keepalive_interval_ms`), instead of two messages a
+  second. The web page asks for the grinder's status every 15 seconds
+  instead of every 5, and every 2 seconds instead of every second during an
+  update.
+
+### Smoother display, lighter Wi-Fi load
+
+- Removed a filesystem check that wrote and deleted a file every 30 seconds.
+  Each flash write could stall the display briefly and wore the flash. The
+  check is now read-only, and a failed check no longer unmounts or formats
+  the filesystem.
+- Changing profile no longer writes to flash during the swipe, and the
+  display settings are no longer reread from flash every five seconds.
+- The web dashboard is sent the grinder's state ten times a second during a
+  grind, with the start and end of a grind sent at once. A hidden browser
+  tab pauses its connection and status polling, and nothing is prepared
+  while no page is connected.
+- The grinder checks for a new release once a day instead of every half
+  hour, and waits six hours after a failed check instead of five minutes.
+  Each check opens a secure connection, the heaviest thing the Wi-Fi radio
+  does while idle, and a grinder with a weak signal fails it every time.
+
 ## [2.0.0] - 2026-11-03
 
 The first release of s31teg's edition. It builds on the community 1.5.9

@@ -21,12 +21,13 @@ DisplayManager* g_display_manager = nullptr;
 namespace {
 constexpr spi_host_device_t kDisplaySpiHost = SPI2_HOST;
 
-static const uint8_t kCmdC4[] = {0x80};
-static const uint8_t kCmd35[] = {0x00};
-static const uint8_t kCmd53[] = {0x20};
-static const uint8_t kCmd63[] = {0xFF};
+constexpr uint8_t kCmdC4[] = {0x80};
+constexpr uint8_t kCmd35[] = {0x00};
+constexpr uint8_t kCmd53[] = {0x20};
+constexpr uint8_t kCmd63[] = {0xFF};
 static const uint8_t kBrightnessOff[] = {0x00};
-static const uint8_t kBrightnessFull[] = {0xFF};
+// Ends with the display on at zero brightness; the caller sets the brightness
+// when the picture is to be seen.
 static const sh8601_lcd_init_cmd_t kV2InitCommands[] = {
     {0x11, nullptr, 0, 80},
     {0xC4, kCmdC4, sizeof(kCmdC4), 0},
@@ -35,8 +36,45 @@ static const sh8601_lcd_init_cmd_t kV2InitCommands[] = {
     {0x63, kCmd63, sizeof(kCmd63), 1},
     {0x51, kBrightnessOff, sizeof(kBrightnessOff), 1},
     {0x29, nullptr, 0, 10},
-    {0x51, kBrightnessFull, sizeof(kBrightnessFull), 0},
 };
+
+constexpr uint8_t kCmdSleepIn = 0x10;
+constexpr uint8_t kCmdSleepOut = 0x11;
+// Leaves "all pixels off", a black screen that Display On does not end.
+constexpr uint8_t kCmdNormalDisplayOn = 0x13;
+constexpr uint8_t kCmdDisplayOn = 0x29;
+constexpr uint8_t kCmdBrightness = 0x51;
+
+// The registers esp_lcd_panel_init() writes for this panel, leaving out Sleep
+// Out, Display On and the brightness. Resent with those three, and with
+// Normal Display On, on the schedule in panel_refresh_policy.h.
+struct PanelRegister {
+    uint8_t command;
+    uint8_t value;
+};
+constexpr PanelRegister kV2SetupRegisters[] = {
+    {0x36, 0x00},  // Memory access control: RGB order, no mirroring
+    {0x3A, 0x55},  // Pixel format: 16 bits per pixel
+    {0xC4, kCmdC4[0]},
+    {0x35, kCmd35[0]},
+    {0x53, kCmd53[0]},
+    {0x63, kCmd63[0]},
+};
+
+// The frame signal's hardware counter starts again from zero at this count,
+// and ignores pulses shorter than a real one can be.
+constexpr int kPanelFrameCounterLimit = 30000;
+constexpr uint32_t kPanelFrameGlitchNs = 1000;
+
+// The redraw after a resend is spread over this many UI cycles. Drawing a
+// quarter of the screen takes up to 22 ms on the V2 board, longer than one
+// 16 ms UI cycle; a twelfth leaves room for the normal drawing of a frame.
+constexpr int32_t kPanelRepaintBands = 12;
+
+// QSPI command word: the write opcode, then the command as a 24-bit address.
+constexpr uint32_t panel_command_word(uint8_t command) {
+    return (0x02UL << 24) | (static_cast<uint32_t>(command) << 8);
+}
 
 lv_color_t* allocate_internal_dma_buffer(size_t bytes) {
     return static_cast<lv_color_t*>(heap_caps_aligned_alloc(
@@ -88,6 +126,7 @@ void DisplayManager::init() {
         esp_lcd_panel_disp_on_off(panel_handle, true) != ESP_OK) {
         return;
     }
+    send_panel_register(kCmdBrightness, brightness_level.load());
 #else
     // Initialize V1 display hardware
     bus = new Arduino_ESP32QSPI(
@@ -191,7 +230,57 @@ void DisplayManager::init() {
     lv_timer_set_period(lv_anim_get_timer(), SYS_LVGL_TIMER_PERIOD_MS);
 
     initialized = true;
+
+#if HW_DISPLAY_VARIANT_V2
+    if (!start_panel_frame_counter()) {
+        LOG_BLE("[DISPLAY] Frame signal counter could not be started; the signal is not watched\n");
+    }
+    const uint32_t set_up_ms = millis();
+    panel_refresh.start(set_up_ms);
+    panel_frame_watch.panel_set_up(set_up_ms);
+    LOG_BLE("[DISPLAY] Panel setup is resent every %lus while the display is on; "
+            "the panel is reset while the display is off and when its frame signal stops\n",
+            static_cast<unsigned long>(kPanelRefreshIntervalMs / 1000U));
+#endif
 }
+
+#if HW_DISPLAY_VARIANT_V2
+// Counts the panel's frame pulses in hardware, so that counting costs no
+// processor time and a noisy line cannot keep the processor busy. The UI task
+// works out from the count whether the panel is running.
+bool DisplayManager::start_panel_frame_counter() {
+    pcnt_unit_config_t unit_config = {};
+    unit_config.low_limit = -1;  // Unused; the driver wants it below zero
+    unit_config.high_limit = kPanelFrameCounterLimit;
+    if (pcnt_new_unit(&unit_config, &panel_frame_counter) != ESP_OK) {
+        panel_frame_counter = nullptr;
+        return false;
+    }
+
+    pcnt_glitch_filter_config_t filter_config = {};
+    filter_config.max_glitch_ns = kPanelFrameGlitchNs;
+    pcnt_chan_config_t channel_config = {};
+    channel_config.edge_gpio_num = HW_DISPLAY_TE_PIN;
+    channel_config.level_gpio_num = -1;
+    pcnt_channel_handle_t channel = nullptr;
+    const bool started =
+        pcnt_unit_set_glitch_filter(panel_frame_counter, &filter_config) == ESP_OK &&
+        pcnt_new_channel(panel_frame_counter, &channel_config, &channel) == ESP_OK &&
+        pcnt_channel_set_edge_action(channel, PCNT_CHANNEL_EDGE_ACTION_INCREASE,
+                                     PCNT_CHANNEL_EDGE_ACTION_HOLD) == ESP_OK &&
+        pcnt_channel_set_level_action(channel, PCNT_CHANNEL_LEVEL_ACTION_KEEP,
+                                      PCNT_CHANNEL_LEVEL_ACTION_KEEP) == ESP_OK &&
+        pcnt_unit_enable(panel_frame_counter) == ESP_OK &&
+        pcnt_unit_clear_count(panel_frame_counter) == ESP_OK &&
+        pcnt_unit_start(panel_frame_counter) == ESP_OK;
+    if (!started) {
+        // Left allocated: this happens once, at power-on, and a counter that
+        // is not read does nothing.
+        panel_frame_counter = nullptr;
+    }
+    return started;
+}
+#endif
 
 #if HW_DISPLAY_VARIANT_V2
 // Two buffers let LVGL render the next strip while the previous one is still
@@ -245,6 +334,9 @@ void DisplayManager::update() {
         metrics_window = {};
         metrics_window_started_ms = now_ms;
     }
+
+    // After drawing, so its short pause falls in the idle part of the cycle.
+    service_panel_refresh(now_ms);
 }
 
 void DisplayManager::log_performance_window(const DisplayPerformanceSnapshot& window) const {
@@ -391,6 +483,11 @@ void DisplayManager::display_metrics_cb(lv_event_t* e) {
             g_display_manager->metrics_window.flush_time_us +=
                 micros() - g_display_manager->flush_wait_started_us;
             break;
+        // A redraw has been handed to the panel. A panel that has just been
+        // set up can now show it (see PanelReveal).
+        case LV_EVENT_REFR_READY:
+            g_display_manager->panel_reveal.screen_drawn();
+            break;
 #endif
         default:
             break;
@@ -399,7 +496,10 @@ void DisplayManager::display_metrics_cb(lv_event_t* e) {
 
 void DisplayManager::display_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map) {
 #if HW_DISPLAY_VARIANT_V2
-    if (!g_display_manager || !g_display_manager->panel_handle) {
+    // A panel that is switched off is asleep and takes no picture; the whole
+    // screen is drawn again when it wakes.
+    if (!g_display_manager || !g_display_manager->panel_handle ||
+        !g_display_manager->panel_powered_on) {
         lv_display_flush_ready(disp);
         return;
     }
@@ -513,15 +613,18 @@ void DisplayManager::set_brightness(float brightness) {
     if (brightness < 0.0f) brightness = 0.0f;
     if (brightness > 1.0f) brightness = 1.0f;
     
-    uint8_t brightness_value = (uint8_t)(brightness * 255.0f);
+    const uint8_t level = static_cast<uint8_t>(brightness * 255.0f);
+    brightness_level.store(level);
 #if HW_DISPLAY_VARIANT_V2
-    uint32_t brightness_command = (0x02UL << 24) | (0x51UL << 8);
-    esp_lcd_panel_io_tx_param(panel_io, brightness_command,
-                              &brightness_value, sizeof(brightness_value));
+    // A panel that is asleep, or set up and not yet showing its picture, gets
+    // the level when the picture is shown.
+    if (panel_powered_on && !panel_reveal.hidden()) {
+        send_panel_register(kCmdBrightness, level);
+    }
 #else
     // Cast to CO5300 and call setBrightness with 8-bit value
     Arduino_CO5300* display = static_cast<Arduino_CO5300*>(gfx_device);
-    display->setBrightness(brightness_value);
+    display->setBrightness(level);
 #endif
 }
 
@@ -532,11 +635,20 @@ void DisplayManager::set_panel_power(bool powered_on) {
     if (!initialized || !gfx_device) return;
 #endif
     if (panel_powered_on == powered_on) return;
+    if (powered_on && panel_wake_hook) {
+        panel_wake_hook();
+    }
+    const bool touched = touch_driver.is_pressed();
 
 #if HW_DISPLAY_VARIANT_V2
-    if (esp_lcd_panel_disp_on_off(panel_handle, powered_on) != ESP_OK) {
-        LOG_BLE("[DISPLAY] Failed to turn panel %s\n", powered_on ? "on" : "off");
-        return;
+    // Off is asleep and reset; on is reset again and set up from scratch. A
+    // panel that went dark by itself, while on or off, therefore works again
+    // at the next wake, and the reset's blank screen falls where the screen
+    // is dark anyway.
+    if (powered_on) {
+        wake_panel(touched);
+    } else {
+        put_panel_to_sleep(touched);
     }
 #else
     if (powered_on) {
@@ -547,19 +659,231 @@ void DisplayManager::set_panel_power(bool powered_on) {
 #endif
 
     panel_powered_on = powered_on;
-    if (powered_on && lvgl_display) {
-        lv_obj_invalidate(lv_screen_active());
+    if (powered_on) {
+        if (touched) {
+            // A finger on the screen as it wakes went down on a dark screen,
+            // whichever part of the firmware does the waking. The contact is
+            // not for the control underneath it.
+            touch_driver.consume_press_event();
+            consume_wake_touch_until_release = true;
+            wake_touch_guard_started_ms = millis();
+        }
+        if (lvgl_display) {
+            lv_obj_invalidate(lv_screen_active());
+        }
     }
     LOG_BLE("[DISPLAY] Panel %s\n", powered_on ? "on" : "off");
 }
 
+void DisplayManager::request_panel_refresh() {
+#if HW_DISPLAY_VARIANT_V2
+    panel_refresh.request();
+#endif
+}
+
+// Keeps the panel showing a picture while it should be on: resets it when a
+// reset has been asked for or its frame signal stays lost, and otherwise
+// resends its setup on schedule (see panel_refresh_policy.h). A healthy panel
+// shows no change from a resend. Only the V2 panel is covered; the V1 driver
+// is unchanged.
+void DisplayManager::service_panel_refresh(uint32_t now_ms) {
+#if HW_DISPLAY_VARIANT_V2
+    if (!panel_io || !panel_handle) return;
+
+    watch_panel_frame_signal(now_ms);
+    if (panel_reset_asked_elsewhere.exchange(false)) {
+        panel_reset.request(PanelResetCause::REQUESTED, now_ms);
+    }
+    if (panel_reset.due(now_ms, panel_powered_on,
+                        touch_driver.quiet_for(kPanelResetTouchQuietMs))) {
+        reset_panel(panel_reset.begin());
+        return;
+    }
+    if (panel_powered_on && panel_reveal.due(now_ms)) {
+        // Sent after the last strip of the redraw has reached the panel: the
+        // driver finishes the transfers under way before a command.
+        send_panel_register(kCmdBrightness, brightness_level.load());
+    }
+
+    switch (panel_refresh.next_step(now_ms, panel_powered_on)) {
+        case PanelRefreshStep::SLEEP_OUT:
+            send_panel_command(kCmdSleepOut);
+            // The controller takes no other command for 5 ms after Sleep Out.
+            // Only this task talks to the panel, so waiting here guarantees it.
+            vTaskDelay(pdMS_TO_TICKS(kPanelSleepOutQuietMs));
+            send_panel_setup();
+            break;
+        case PanelRefreshStep::DISPLAY_ON:
+            send_panel_command(kCmdDisplayOn);
+            send_panel_register(kCmdBrightness, brightness_level.load());
+            // A reset panel ignored everything drawn since, so draw it again.
+            panel_repaint_next_row = 0;
+            panel_refresh_count.fetch_add(1);
+            break;
+        case PanelRefreshStep::NONE:
+            break;
+    }
+
+    continue_panel_repaint();
+#else
+    (void)now_ms;
+#endif
+}
+
+#if HW_DISPLAY_VARIANT_V2
+void DisplayManager::send_panel_command(uint8_t command) {
+    esp_lcd_panel_io_tx_param(panel_io, panel_command_word(command), nullptr, 0);
+}
+
+void DisplayManager::send_panel_register(uint8_t command, uint8_t value) {
+    // `value` is a copy on this task's stack: internal RAM that the SPI driver
+    // sends from directly, without allocating a transfer buffer.
+    esp_lcd_panel_io_tx_param(panel_io, panel_command_word(command), &value, sizeof(value));
+}
+
+void DisplayManager::send_panel_setup() {
+    send_panel_command(kCmdNormalDisplayOn);
+    for (const PanelRegister& panel_register : kV2SetupRegisters) {
+        send_panel_register(panel_register.command, panel_register.value);
+    }
+    send_panel_register(kCmdBrightness, brightness_level.load());
+}
+
+// Follows the panel's frame signal. When it stops the setup is resent at
+// once, and PanelResetSchedule asks for a reset if that does not bring it
+// back.
+void DisplayManager::watch_panel_frame_signal(uint32_t now_ms) {
+    // The counter starts again from zero at its limit; the watch only needs
+    // to see that the count moved.
+    int pulse_count = 0;
+    if (panel_frame_counter) {
+        pcnt_unit_get_count(panel_frame_counter, &pulse_count);
+    }
+    const PanelFrameState state = panel_frame_watch.update(
+        now_ms, static_cast<uint32_t>(pulse_count), panel_powered_on);
+    panel_frame_state.store(state);
+
+    const PanelFrameEvents events = panel_reset.follow_frame(now_ms, state, panel_powered_on);
+    if (events.lost) {
+        panel_fault_count.fetch_add(1);
+        panel_refresh.request();
+        LOG_BLE("[DISPLAY] Frame signal stopped: the panel has restarted or fallen asleep\n");
+    }
+    if (events.recovered) {
+        panel_recovery_count.fetch_add(1);
+        LOG_BLE("[DISPLAY] Frame signal is back\n");
+    }
+}
+
+// Switches the panel off in the order its controller gives for powering down
+// (Display Off, Sleep In, a pause, the reset pin) and leaves it as a reset
+// does: asleep, with its supply converter stopped. wake_panel() brings it
+// back. Blocks the UI task for about a quarter of a second.
+void DisplayManager::put_panel_to_sleep(bool touched) {
+    const bool switched_off = esp_lcd_panel_disp_on_off(panel_handle, false) == ESP_OK;
+    send_panel_command(kCmdSleepIn);
+    vTaskDelay(pdMS_TO_TICKS(kPanelSleepInSettleMs));
+    const bool reset = esp_lcd_panel_reset(panel_handle) == ESP_OK;
+    restart_touch_after_panel_reset(touched);
+
+    panel_repaint_next_row = -1;
+    panel_off_reset_count.fetch_add(1);
+    if (!switched_off || !reset) {
+        LOG_BLE("[DISPLAY] Panel off: a command failed\n");
+    }
+}
+
+// Brings back a panel that put_panel_to_sleep() switched off. The reset pin
+// is pulsed once more first, so that a panel upset while it slept starts
+// clean as well. With a finger on the screen it is not pulsed: that restarts
+// the touch controller, which would drop the contact and read it again as a
+// new one. Blocks the UI task for about a quarter of a second, or a tenth
+// with a finger on the screen.
+void DisplayManager::wake_panel(bool touched) {
+    const bool reset = touched || esp_lcd_panel_reset(panel_handle) == ESP_OK;
+    const bool set_up = set_up_panel();
+    if (!touched) {
+        restart_touch_after_panel_reset(false);
+    }
+    if (!reset || !set_up) {
+        LOG_BLE("[DISPLAY] Panel on: a setup command failed\n");
+    }
+}
+
+// Sets up a panel that has been reset, with the commands used at power-on,
+// and leaves its brightness at zero until the screen has been drawn again
+// (see PanelReveal). The caller asks for that drawing. Blocks the UI task for
+// about a tenth of a second.
+bool DisplayManager::set_up_panel() {
+    const bool set_up = esp_lcd_panel_init(panel_handle) == ESP_OK &&
+                        esp_lcd_panel_disp_on_off(panel_handle, true) == ESP_OK;
+    const uint32_t done_ms = millis();
+    panel_refresh.start(done_ms);
+    panel_frame_watch.panel_set_up(done_ms);
+    panel_reveal.hide(done_ms);
+    panel_repaint_next_row = -1;
+    return set_up;
+}
+
+// Does to the panel what a restart does, while the display is on: pulses its
+// reset pin and sets it up from scratch. The picture is black meanwhile, and
+// the UI task blocked, for about a quarter of a second.
+void DisplayManager::reset_panel(PanelResetCause cause) {
+    const bool touched = touch_driver.is_pressed();
+    const bool reset = esp_lcd_panel_reset(panel_handle) == ESP_OK;
+    const bool set_up = set_up_panel();
+    restart_touch_after_panel_reset(touched);
+
+    panel_reset.finished(millis());
+    if (lvgl_display) {
+        lv_obj_invalidate(lv_screen_active());
+    }
+    panel_reset_counts[static_cast<size_t>(cause)].fetch_add(1);
+    LOG_BLE("[DISPLAY] Panel reset (%s)%s\n", panel_reset_cause_name(cause),
+            reset && set_up ? "" : ": a setup command failed");
+}
+
+// The reset pin is shared with the touch controller, which restarts too. A
+// press under way ends there: what was pressed is told that the press was
+// lost, which stops a held +/- button and gives no tap. A finger still down
+// when the controller answers again is read as a new press.
+void DisplayManager::restart_touch_after_panel_reset(bool was_touched) {
+    touch_driver.controller_was_reset();
+    if (was_touched && lvgl_input) {
+        lv_indev_wait_release(lvgl_input);
+    }
+}
+
+// Invalidates the next band of the screen; LVGL redraws it on its next cycle.
+void DisplayManager::continue_panel_repaint() {
+    if (panel_repaint_next_row < 0) return;
+    if (!panel_powered_on || !lvgl_display) {
+        panel_repaint_next_row = -1;
+        return;
+    }
+
+    const int32_t height = static_cast<int32_t>(screen_height);
+    // Even, because the SH8601 only accepts windows on 2-pixel boundaries.
+    const int32_t band_rows = ((height / kPanelRepaintBands) + 1) & ~1;
+    lv_area_t band;
+    band.x1 = 0;
+    band.x2 = static_cast<int32_t>(screen_width) - 1;
+    band.y1 = panel_repaint_next_row;
+    band.y2 = std::min(panel_repaint_next_row + band_rows, height) - 1;
+    lv_obj_invalidate_area(lv_screen_active(), &band);
+
+    panel_repaint_next_row += band_rows;
+    if (panel_repaint_next_row >= height) {
+        panel_repaint_next_row = -1;
+    }
+}
+#endif
+
 bool DisplayManager::filter_touch_for_panel_wake(const TouchData& touch) {
     if (!panel_powered_on) {
-        if (touch.just_pressed) {
+        if (touch.just_pressed && wake_on_touch) {
+            // Waking also swallows this contact until it is released.
             set_panel_power(true);
-            touch_driver.consume_press_event();
-            consume_wake_touch_until_release = true;
-            wake_touch_guard_started_ms = millis();
             LOG_BLE("[DISPLAY] Panel wake source: touch\n");
         }
         return true;
@@ -568,6 +892,9 @@ bool DisplayManager::filter_touch_for_panel_wake(const TouchData& touch) {
     if (!consume_wake_touch_until_release) {
         if (touch.just_pressed) {
             touch_driver.consume_press_event();
+            // If the screen is black because the panel lost its setup, this
+            // touch brings it back without waiting for the scheduled resend.
+            request_panel_refresh();
         }
         return false;
     }

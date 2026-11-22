@@ -57,6 +57,20 @@ the grinder's smaller feature set.
   them and registered again before they resume. A deliberately suspended task
   must never cause a watchdog reboot midway through an otherwise healthy upload.
 
+## Wi-Fi and the power supply
+
+The radio is the board's largest load, and a grind is when the grinder's
+supply is weakest. With **Menu → Wi-Fi → Pause** on (preference `wifi_rest`),
+`NetworkManager` leaves the joined network when a grind starts and joins it
+again 15 seconds after the grind ends (`src/network/radio_rest_policy.h`);
+its state reads `resting` meanwhile. A station that is not connected has its
+radio powered down. Web and Home Assistant clients lose their connection for
+that time and reconnect by themselves; the finished grind is in the history.
+Until the user chooses, the pause is on for a grinder that has restarted on a
+brownout before, and off otherwise (`NET_WIFI_REST_WHILE_GRINDING_DEFAULT`).
+**Enabled** on the same page (preference `wifi_on`) switches Wi-Fi off
+altogether.
+
 ## Service boundaries
 
 - `NetworkManager`: credentials, station/AP state, reconnect policy and hostname.
@@ -92,7 +106,16 @@ optional Improv extensions and currently return `Unknown RPC command`.
 
 ## WebSocket API v1
 
-The device serves `/ws` and publishes at most one state message every 100 ms.
+The device serves `/ws` and publishes one state message every 100 ms while a
+grind is running. The start and the end of a grind are sent at once. While
+idle it publishes a state message only when what a client shows has changed
+(the weight by 0.05 g or more, or anything else), no closer together than
+500 ms, and a complete state message as a keep-alive every 2.5 s. Every
+message wakes the Wi-Fi radio, so an idle grinder stays quiet. No message is
+built while no client is connected. The three intervals are reported under
+`capabilities` by `GET /api/v1/status` as `state_interval_ms`,
+`idle_state_interval_ms` and `idle_keepalive_interval_ms`. The rules are in
+`src/network/state_stream_policy.h`.
 It accepts no more than four clients and disconnects a client whose outbound
 queue cannot keep up. Browser handshakes must have the same HTTP origin as the
 device page; native clients without an `Origin` header remain supported.
@@ -155,13 +178,33 @@ its independent 30-second cutoff. Tare, profile and mode changes are refused
 while the grinder is not idle.
 
 The browser applies a display-only exponential filter and near-zero deadband to
-the 10 Hz flow value. Grinder control and saved session samples retain their
+the flow value. Grinder control and saved session samples retain their
 original precision; completed graphs are replaced with the full recorded trace.
 
 ## HTTP API v1
 
 - `GET /api/v1/status`: device, build, network, memory and OTA progress state,
   plus the WebSocket path, protocol level and advertised command capabilities.
+  It also reports the Wi-Fi signal (`network.rssi`, dBm), the reason for the
+  last restart (`system.reset_reason`), how many restarts so far followed a
+  brownout (`system.brownout_restarts`, kept across power cycles), what was
+  running just before the last of them (`system.last_brownout`: `uptime_s`,
+  `grind_phase`, `motor_on`, `wifi`, `display_on`, `brightness`, `cpu_mhz`;
+  `null` when none is on record), the
+  processor clock (`system.cpu_mhz`: 240 in use, 80 while the display is
+  dimmed or off), and health
+  counters: `display` and `touch` (`bus_resets`, `read_errors`). `display`
+  holds `panel_on`, `brightness`, `panel_refreshes`, `reset_supported`,
+  `frame_signal` (`running`, `lost`, `absent`, or `unknown` just after a
+  setup and while the display is off), `panel_resets` since the last start
+  (`display_off`: made as the display switched off; `frame_lost` and
+  `requested`: made while it was on), and `faults` and `recoveries`: how
+  often the frame signal stopped
+  while the display should have been on and how often it came back, kept
+  across power cycles.
+- `POST /api/v1/display/reset`: asks for a reset of the display panel, for a
+  screen that is black while the grinder works. V2 boards only. It is refused
+  while the display is switched off.
 - `GET /api/v1/settings`: the three grinder profiles and the matching on-device
   automation, purge, display, screensaver, optional GaggiMate host, logging,
   swipe and Bluetooth values.
@@ -177,7 +220,7 @@ original precision; completed graphs are replaced with the full recorded trace.
 - `GET`, `POST` and `DELETE /api/v1/screensaver/image`: read, transactionally
   replace or remove the fixed-size RGB565 custom image while idle.
 
-Settings and screensaver mutations enforce same-origin checks. Local API and
+Settings, screensaver and display-reset requests enforce same-origin checks. Local API and
 motor commands are currently unauthenticated, so the grinder should be kept on
 a trusted home network. Web OTA is
 deliberately unauthenticated at this stage; browser confirmation plus the
@@ -206,7 +249,8 @@ HTTP, and then keeps a reconnecting local-push WebSocket connection. It exposes
 standard sensors, binary sensors, selects and buttons rather than requiring an
 MQTT broker or YAML configuration.
 
-The firmware continues to publish internally at 10 Hz for the web dashboard.
+The firmware publishes at 10 Hz during a grind; while idle it publishes
+changes as they happen and a keep-alive every 2.5 s.
 The Home Assistant coordinator publishes semantic transitions immediately but
 rate-limits changing scale values before they reach Home Assistant's recorder,
 preventing idle sensor jitter from creating unnecessary database growth.

@@ -90,6 +90,25 @@ hardware-validation boundary.
 
 ---
 
+## 🧪 Desktop Tests
+
+The firmware's logic tests need a C++17 compiler and Python 3, no hardware.
+Run them from the repository root:
+
+```bash
+python3 -m unittest discover -s tools/tests -p '*_test.py'
+```
+
+One of them, `grind_bench_test.py`, runs the unmodified grind controller, both
+grind strategies and the scale filter against a simulated grinder and load
+cell. It grinds whole doses on a quiet bench, on an ordinary one and with scale
+readings recorded next to a running 3D printer, and covers a lifted
+portafilter, an overshoot and a timeout. Add a scenario to
+`tools/tests/grind_bench/bench.cpp` when you change grind control. Set
+`GRIND_BENCH_VERBOSE=1` to print every grind phase by phase.
+
+---
+
 ## 🔧 Firmware Build Targets
 
 The project has four build targets:

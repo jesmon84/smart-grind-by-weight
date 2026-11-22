@@ -108,9 +108,11 @@ public:
     GrinderPurgeMode grinder_purge_mode_for_session{};
     float grinder_purge_amount_g_for_session = 1;
     char last_error_message[32]{};
+    char last_error_title[16]{};
     Strategy* active_strategy = nullptr;
     GrindSessionDescriptor session_descriptor{};
     int strategy_context = 0;
+    void queue_manual_runtime(uint32_t) {}
     void switch_phase(GrindPhase p, const GrindLoopData& = {}) { phase = p; }
     bool queue_terminal_session();
     bool queue_flash_operation(const FlashOpRequest&);

@@ -31,6 +31,7 @@ class WebOtaInterlockTest(unittest.TestCase):
         state = re.search(r"struct OtaRequestState \{.*?\};", source, re.S).group()
         harness = r'''
 #include "system/operation_interlock.h"
+#include "system/power_saving_policy.h"
 #include <atomic>
 #include <cassert>
 #include <cstdlib>
@@ -64,7 +65,7 @@ struct AsyncWebServerRequest {
 uint32_t now = 100;
 uint32_t millis() { return now; }
 constexpr uint32_t OTA_REBOOT_DELAY_MS=1500, OTA_PREPARE_TIMEOUT_MS=15000, OTA_READY_WINDOW_MS=30000;
-constexpr uint32_t UPDATE_CHECK_RETRY_MS=300000, UPDATE_CHECK_INTERVAL_MS=1800000;
+struct { bool resting=false; bool display_resting() const { return resting; } } power_saver;
 constexpr size_t OTA_MIN_INTERNAL_HEAP=65536, OTA_DOWNLOAD_TASK_STACK=12288, UPDATE_CHECK_TASK_STACK=10240;
 constexpr int MALLOC_CAP_INTERNAL=1, MALLOC_CAP_8BIT=2, pdPASS=1, U_FLASH=0;
 constexpr size_t UPDATE_SIZE_UNKNOWN=0;
@@ -221,6 +222,16 @@ int main() {
     assert(recovery.reboot_pending_ && recovery.is_ota_active());
     assert(!operation_interlock().try_acquire() && !recovery.request_ota_preparation());
     operation_interlock().release(recovery.operation_token_);
+    // The online update check waits for a display that is dimmed or off, and
+    // then starts once.
+    DeviceWebServer checker; setup(checker);
+    now += kUpdateCheckIntervalMs;
+    power_saver.resting=false; checker.update();
+    assert(checker.firmware_update_state_.load()!=FirmwareUpdateState::CHECKING);
+    assert(!checker.firmware_update_check_active_.load());
+    power_saver.resting=true; checker.update();
+    assert(checker.firmware_update_state_.load()==FirmwareUpdateState::CHECKING);
+    assert(checker.firmware_update_check_active_.load());
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:

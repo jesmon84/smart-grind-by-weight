@@ -52,6 +52,8 @@ public:
     void handle_screensaver_startup_toggle();
     void handle_screensaver_sleep_toggle();
     void handle_display_off_toggle();
+    void handle_wifi_toggle();
+    void handle_wifi_rest_toggle();
 
     float get_normal_brightness() const;
     float get_screensaver_brightness() const;

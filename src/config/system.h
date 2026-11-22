@@ -79,6 +79,16 @@
 #define SYS_RESULT_TIMER_LIMIT_MS (30UL * 60UL * 1000UL)
 
 //------------------------------------------------------------------------------
+// WI-FI AND THE POWER SUPPLY
+//------------------------------------------------------------------------------
+// With 1 the Wi-Fi radio is off while a grind runs on every grinder until the
+// user chooses otherwise (Menu → Wi-Fi → Pause). With 0 that is only the
+// starting choice on a grinder that has restarted on a brownout.
+#ifndef NET_WIFI_REST_WHILE_GRINDING_DEFAULT
+#define NET_WIFI_REST_WHILE_GRINDING_DEFAULT 0
+#endif
+
+//------------------------------------------------------------------------------
 // JOG ACCELERATION CONFIGURATION
 //------------------------------------------------------------------------------
 // Button jog/hold acceleration thresholds (when to transition between stages)
