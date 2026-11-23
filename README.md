@@ -18,8 +18,10 @@ motor off before the target, then uses controlled pulses to finish the dose.
 > below and redrawn wiring diagrams for both board generations, with its own
 > releases, web flasher and over-the-air updates. Version 2.0.1 adds a switch
 > that turns Wi-Fi off, for grinders whose 5 V supply cannot carry it, and
-> lowers the firmware's power draw. Everything else matches the upstream 1.5.9
-> release, and the original authors remain credited.
+> lowers the firmware's power draw. Version 2.0.2 learns where to stop the
+> motor from each grind, so the main run ends just under the target. Everything
+> else matches the upstream 1.5.9 release, and the original authors remain
+> credited.
 
 **[Flash firmware](https://s31teg.github.io/smart-grind-by-weight/)** ·
 **[What this fork adds](#what-this-fork-adds)** ·
@@ -107,12 +109,20 @@ you only use Wi-Fi for firmware updates, leave it off and switch it on when
 you want to update. The processor also runs slower while the display is
 dimmed, and the update screen is dimmed during a firmware upload.
 
+**Stops just short, then finishes (2.0.2).** The grinder learns from each
+grind how much still lands after the motor stops and cuts the motor that much
+early, plus a small margin, so the main run ends just under the target and one
+short pulse finishes it. New beans that grind faster or slower are allowed for
+at once. A grinder on a vibrating bench can switch on **Menu → Grind Settings
+→ Shaky Bench**.
+
 **Developer tooling.** The desktop simulator runs on macOS and Linux as well as
 Windows, with layout checks that catch overlapping text before it reaches the
 grinder. BLE delta updates pick the archive built for the matching board.
 
-The full lists are in the [2.0.0](CHANGELOG.md#200---2026-11-03) and
-[2.0.1](CHANGELOG.md#201---2026-11-22) changelogs.
+The full lists are in the [2.0.0](CHANGELOG.md#200---2026-11-03),
+[2.0.1](CHANGELOG.md#201---2026-11-22) and
+[2.0.2](CHANGELOG.md#202---2026-11-23) changelogs.
 
 ## Wiring diagrams
 
@@ -150,8 +160,8 @@ firmware file**:
 
 | Board | File |
 | --- | --- |
-| V1 (original CO5300 display) | `smart-grind-by-weight-v2.0.1.bin` |
-| V2 (SH8601 display, may say Rev1.1) | `smart-grind-by-weight-v2.0.1-waveshare-164-v2.bin` |
+| V1 (original CO5300 display) | `smart-grind-by-weight-v2.0.2.bin` |
+| V2 (SH8601 display, may say Rev1.1) | `smart-grind-by-weight-v2.0.2-waveshare-164-v2.bin` |
 
 Settings are kept. From then on the grinder checks this fork for new releases,
 and the green update icon installs them.

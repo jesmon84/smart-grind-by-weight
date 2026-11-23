@@ -4,7 +4,14 @@ This file records the user-visible changes in the community-maintained release
 line. Earlier release history remains available in the original project's
 [GitHub releases](https://github.com/jaapp/smart-grind-by-weight/releases).
 
-## [Unreleased]
+## [2.0.2] - 2026-11-23
+
+The grinder now learns from each grind where to stop its motor, so the main
+run ends just under the target and one short pulse finishes it, instead of
+sometimes running past the target. A grinder on a vibrating bench gets a
+Shaky Bench switch, the update screen shows its progress again, dimmed, and
+SCALE STARTING waits two seconds longer after power-on. Settings are kept
+when you install it over 2.0.1.
 
 ### Shaky-bench switch
 
@@ -702,6 +709,7 @@ Original commit authorship is retained in the repository history; the release
 also includes separately authored review, hardware-support and integration
 fixes described above.
 
+[2.0.2]: https://github.com/s31teg/smart-grind-by-weight/releases/tag/v2.0.2
 [2.0.1]: https://github.com/s31teg/smart-grind-by-weight/releases/tag/v2.0.1
 [2.0.0]: https://github.com/s31teg/smart-grind-by-weight/releases/tag/v2.0.0
 [1.5.0]: https://github.com/Clinteastman/smart-grind-by-weight/releases/tag/v1.5.0
