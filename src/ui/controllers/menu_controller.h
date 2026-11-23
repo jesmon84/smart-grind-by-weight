@@ -45,6 +45,7 @@ public:
     void handle_coast_ratio_slider_released();
     void handle_motor_latency_slider();
     void handle_motor_latency_slider_released();
+    void handle_shaky_bench_toggle();
     void handle_brightness_normal_slider();
     void handle_brightness_normal_slider_released();
     void handle_brightness_screensaver_slider();

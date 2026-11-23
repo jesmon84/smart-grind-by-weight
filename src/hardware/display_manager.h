@@ -60,7 +60,6 @@ private:
     bool panel_powered_on;
     bool consume_wake_touch_until_release;
     uint32_t wake_touch_guard_started_ms;
-    bool wake_on_touch = true;
     PanelWakeHook panel_wake_hook = nullptr;
 
     // Brightness the picture is shown at (0-255); sent with every setup of
@@ -108,10 +107,6 @@ public:
     // Call from the UI task only.
     void set_panel_power(bool powered_on);
     bool is_panel_powered_on() const { return panel_powered_on; }
-    // Whether a touch switches a display that is off back on. Off while the
-    // display has to stay dark whatever the user does, as during a firmware
-    // upload. Call from the UI task only.
-    void set_wake_on_touch(bool enabled) { wake_on_touch = enabled; }
     // `hook` is called first thing whenever the display is switched on,
     // before the panel is set up and the screen drawn again.
     void set_panel_wake_hook(PanelWakeHook hook) { panel_wake_hook = hook; }

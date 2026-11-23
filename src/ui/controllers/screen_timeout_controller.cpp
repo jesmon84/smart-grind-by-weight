@@ -48,7 +48,10 @@ void ScreenTimeoutController::save_power() {
                               ui_manager_->grind_controller->is_active();
     const bool bluetooth_busy = ui_manager_->bluetooth_manager &&
                                 ui_manager_->bluetooth_manager->is_transfer_active();
-    power_saver.update(!screen_dimmed_ && !panel_off_, grind_active, bluetooth_busy);
+    const bool receiving_firmware = ui_manager_->bluetooth_manager &&
+                                    ui_manager_->bluetooth_manager->is_updating() &&
+                                    ui_manager_->bluetooth_manager->get_ota_progress() < 100.0f;
+    power_saver.update(!screen_dimmed_ && !panel_off_, grind_active, bluetooth_busy, receiving_firmware);
 }
 
 void ScreenTimeoutController::update_display_state() {
@@ -67,11 +70,11 @@ void ScreenTimeoutController::update_display_state() {
     }
 
     if (firmware_upload_running()) {
-        hold_display_off_for_upload(display);
+        show_upload_dimmed(display);
         return;
     }
-    if (upload_hold_) {
-        release_display_after_upload(display);
+    if (upload_dimmed_) {
+        end_upload_display(display);
     }
 
     if (is_protected_state()) {
@@ -220,40 +223,50 @@ void ScreenTimeoutController::restore_normal_display(DisplayManager* display) {
     panel_off_ = false;
 }
 
-// True while firmware is being uploaded from the web page or over Bluetooth.
-// An update started on the grinder's own screen does not count: that screen
-// is the only place its progress shows.
+// True while firmware is being uploaded, from the web page, over Bluetooth or
+// from the grinder's own menu.
 bool ScreenTimeoutController::firmware_upload_running() const {
-    if (device_web_server.is_ota_in_progress() && !device_web_server.is_ota_started_on_device()) {
+    if (device_web_server.is_ota_in_progress()) {
         return true;
     }
     return ui_manager_ && ui_manager_->bluetooth_manager &&
            ui_manager_->bluetooth_manager->is_updating();
 }
 
-// A firmware upload is the heaviest load the grinder's supply sees, and the
-// display's share of it can be spared: progress shows on the web page or in
-// the upload tool. The panel sleeps from the start of the upload until the
-// grinder restarts into the new firmware, and a touch does not wake it.
-void ScreenTimeoutController::hold_display_off_for_upload(DisplayManager* display) {
-    if (upload_hold_) {
+// A firmware upload is the heaviest load the grinder's supply sees. The
+// update screen stays on, so the upload does not look like a broken grinder,
+// but dimmed (power_saving_policy.h) until the grinder restarts into the new
+// firmware.
+void ScreenTimeoutController::show_upload_dimmed(DisplayManager* display) {
+    if (upload_dimmed_) {
         return;
     }
-    upload_hold_ = true;
-    display->set_wake_on_touch(false);
-    display->set_panel_power(false);
-    panel_off_ = true;
-    LOG_BLE("[DISPLAY] Panel off for the firmware upload\n");
+    upload_dimmed_ = true;
+    if (screensaver_controller_ && screensaver_controller_->is_visible()) {
+        screensaver_controller_->hide();
+    }
+    float normal = USER_SCREEN_BRIGHTNESS_NORMAL;
+    if (ui_manager_->menu_controller_) {
+        normal = ui_manager_->menu_controller_->get_normal_brightness();
+    }
+    display->set_brightness(upload_brightness(normal, HW_DISPLAY_MINIMAL_BRIGHTNESS_PERCENT / 100.0f));
+    if (!display->is_panel_powered_on()) {
+        display->set_panel_power(true);
+    }
+    // Leaves the display counted as dimmed, so that it returns to its normal
+    // brightness if the upload ends without a restart.
+    screen_dimmed_ = true;
+    panel_off_ = false;
+    LOG_BLE("[DISPLAY] Update screen dimmed for the firmware upload\n");
 }
 
 // The upload ended without a restart: it failed or was called off. The
 // display comes back as after any activity, with a fresh idle interval.
-void ScreenTimeoutController::release_display_after_upload(DisplayManager* display) {
-    upload_hold_ = false;
-    display->set_wake_on_touch(true);
+void ScreenTimeoutController::end_upload_display(DisplayManager* display) {
+    upload_dimmed_ = false;
     last_weight_activity_ms_ = millis();
     restore_normal_display(display);
-    LOG_BLE("[DISPLAY] Panel back on: the firmware upload ended without a restart\n");
+    LOG_BLE("[DISPLAY] Normal brightness: the firmware upload ended without a restart\n");
 }
 
 bool ScreenTimeoutController::is_protected_state() const {

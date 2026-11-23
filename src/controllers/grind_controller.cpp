@@ -135,6 +135,17 @@ void GrindController::init(WeightSensor* lc, Grinder* gr, Preferences* prefs) {
 
     // Load coast ratio from preferences
     load_coast_ratio();
+
+    // The after-run time earlier grinds taught
+    load_learned_coast();
+
+#if GRIND_SHAKY_BENCH_DEFAULT
+    // A build made for a shaking bench stores that choice once, so that it
+    // outlives an update to a standard build and shows in the menu as chosen.
+    if (preferences && !preferences->isKey(PREF_KEY_SHAKY_BENCH)) {
+        save_shaky_bench(true);
+    }
+#endif
 }
 
 bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grind_mode) {
@@ -207,6 +218,7 @@ bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grin
     predictive_end_weight = 0;
     final_weight = 0;
     motor_stop_target_weight = GRIND_UNDERSHOOT_TARGET_G; // Start with a safe default
+    main_run_flow_gps_ = 0.0f;
 
     time_grind_start_ms = 0;
 
@@ -246,9 +258,7 @@ bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grin
     reset_mechanical_anomaly_count();
     net_weight_removal_guard_.reset(0.0f);
     vessel_tracker_.interrupt();
-    shaky_bench_handling_ =
-        (preferences ? preferences->getInt(PREF_KEY_SHAKY_BENCH, GRIND_SHAKY_BENCH_DEFAULT)
-                     : GRIND_SHAKY_BENCH_DEFAULT) != 0;
+    shaky_bench_handling_ = shaky_bench_enabled();
     quiet_after_tare_ = false;
     quiet_after_prime_ = false;
 
@@ -1245,6 +1255,7 @@ void GrindController::process_queued_ui_events() {
 
 bool GrindController::queue_terminal_session() {
     if (phase != GrindPhase::COMPLETED && phase != GrindPhase::TIMEOUT) return false;
+    queue_learned_coast_save();
     if (session_end_flash_queued || !grind_logger.is_logging_active()) return true;
 
     FlashOpRequest request = {};
@@ -1274,9 +1285,11 @@ bool GrindController::queue_flash_operation(const FlashOpRequest& request) {
         } else {
             const char* op_name = request.operation_type == FlashOpRequest::END_GRIND_SESSION
                                       ? "END_GRIND_SESSION"
-                                      : request.operation_type == FlashOpRequest::UPDATE_MANUAL_RUNTIME
-                                            ? "UPDATE_MANUAL_RUNTIME"
-                                            : "START_GRIND_SESSION";
+                                  : request.operation_type == FlashOpRequest::UPDATE_MANUAL_RUNTIME
+                                      ? "UPDATE_MANUAL_RUNTIME"
+                                  : request.operation_type == FlashOpRequest::SAVE_LEARNED_COAST
+                                      ? "SAVE_LEARNED_COAST"
+                                      : "START_GRIND_SESSION";
             LOG_BLE("[%lums FLASH_OP] QUEUED %s operation for Core 1 processing\n", millis(), op_name);
             return true;
         }
@@ -1314,7 +1327,15 @@ void GrindController::process_queued_flash_operations() {
                 LOG_BLE("[%lums FLASH_OP] Recorded manual motor runtime: %lums\n",
                         millis(), static_cast<unsigned long>(request.motor_runtime_ms));
                 break;
-                
+
+            case FlashOpRequest::SAVE_LEARNED_COAST:
+                if (preferences) {
+                    preferences->putFloat(PREF_KEY_COAST_LEARNT_MS, request.learned_coast_ms);
+                    preferences->putInt(PREF_KEY_COAST_LEARNT_GRINDS,
+                                        static_cast<int>(std::min<uint32_t>(request.learned_coast_grinds, INT32_MAX)));
+                }
+                break;
+
             default:
                 LOG_BLE("WARNING: Unknown flash operation type %d\n", request.operation_type);
                 break;
@@ -1367,6 +1388,51 @@ void GrindController::set_error_message(const char* message, const char* title) 
     }
     strncpy(last_error_message, message, sizeof(last_error_message) - 1);
     last_error_message[sizeof(last_error_message) - 1] = '\0';
+}
+
+void GrindController::load_learned_coast() {
+    const auto control_lock = lock_control();
+    if (!preferences) {
+        coast_learner_.reset();
+        return;
+    }
+    const int grinds = preferences->getInt(PREF_KEY_COAST_LEARNT_GRINDS, 0);
+    coast_learner_.restore(preferences->getFloat(PREF_KEY_COAST_LEARNT_MS, 0.0f),
+                           grinds > 0 ? static_cast<uint32_t>(grinds) : 0U);
+    if (coast_learner_.known()) {
+        LOG_BLE("Coast: learnt %.0f ms over %lu grinds\n", coast_learner_.coast_ms(),
+                static_cast<unsigned long>(coast_learner_.grinds()));
+    } else {
+        LOG_BLE("Coast: nothing learnt yet; the first grind estimates it\n");
+    }
+}
+
+// Called with the first settled weight after the main run: everything that
+// landed since the motor stopped is in. The main run's own flow turns that
+// into time. It is stored once the grind has its result (queue_terminal_session),
+// not while corrections run: a flash write pauses both processor cores.
+void GrindController::learn_coast_from_main_run(float settled_weight) {
+    const float landed_g = settled_weight - predictive_end_weight;
+    float observed_ms = 0.0f;
+    if (!coast_ms_from_landing(landed_g, main_run_flow_gps_, &observed_ms)) {
+        queue_log_message("[COAST] %.2fg landed after the stop at %.2fg/s: not learnt\n", landed_g,
+                          main_run_flow_gps_);
+        return;
+    }
+    coast_learner_.learn(observed_ms);
+    queue_log_message("[COAST] %.2fg landed after the stop at %.2fg/s = %.0fms; learnt %.0fms over %lu grinds\n",
+                      landed_g, main_run_flow_gps_, observed_ms, coast_learner_.coast_ms(),
+                      static_cast<unsigned long>(coast_learner_.grinds()));
+    coast_save_pending_ = true;
+}
+
+void GrindController::queue_learned_coast_save() {
+    if (!coast_save_pending_) return;
+    FlashOpRequest request = {};
+    request.operation_type = FlashOpRequest::SAVE_LEARNED_COAST;
+    request.learned_coast_ms = coast_learner_.coast_ms();
+    request.learned_coast_grinds = coast_learner_.grinds();
+    if (queue_flash_operation(request)) coast_save_pending_ = false;
 }
 
 // Manual grinds are not logged as sessions, but their motor time still
@@ -1549,4 +1615,28 @@ void GrindController::set_coast_ratio(float value) {
 
     coast_ratio_ = value;
     LOG_BLE("Coast ratio: Set to %.2f (not saved to NVS)\n", value);
+}
+
+//==============================================================================
+// SHAKY-BENCH HANDLING (Menu → Grind Settings → Shaky Bench)
+//==============================================================================
+// The stored choice is read as each grind starts, so a change made in the menu
+// applies from the next grind.
+
+bool GrindController::shaky_bench_enabled() const {
+    return (preferences ? preferences->getInt(PREF_KEY_SHAKY_BENCH, GRIND_SHAKY_BENCH_DEFAULT)
+                        : GRIND_SHAKY_BENCH_DEFAULT) != 0;
+}
+
+bool GrindController::save_shaky_bench(bool enabled) {
+    if (!preferences) {
+        LOG_BLE("ERROR: Cannot save the shaky-bench setting - no preferences available\n");
+        return false;
+    }
+    if (preferences->putInt(PREF_KEY_SHAKY_BENCH, enabled ? 1 : 0) != sizeof(int32_t)) {
+        LOG_BLE("ERROR: Failed to save the shaky-bench setting to NVS\n");
+        return false;
+    }
+    LOG_BLE("Shaky-bench handling: saved %s\n", enabled ? "on" : "off");
+    return true;
 }

@@ -881,7 +881,7 @@ void DisplayManager::continue_panel_repaint() {
 
 bool DisplayManager::filter_touch_for_panel_wake(const TouchData& touch) {
     if (!panel_powered_on) {
-        if (touch.just_pressed && wake_on_touch) {
+        if (touch.just_pressed) {
             // Waking also swallows this contact until it is released.
             set_panel_power(true);
             LOG_BLE("[DISPLAY] Panel wake source: touch\n");

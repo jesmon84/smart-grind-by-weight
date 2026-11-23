@@ -40,9 +40,6 @@ public:
     bool is_ota_in_progress() const {
         return ota_preparation_state_.load() != OtaPreparationState::IDLE || is_ota_active();
     }
-    // True for an update started from the grinder's own screen, whose
-    // progress is shown nowhere else.
-    bool is_ota_started_on_device() const { return ota_started_on_device_.load(); }
     uint8_t ota_progress_percent() const;
     bool ota_failed() const { return ota_failed_.load(); }
     FirmwareUpdateState firmware_update_state() const { return firmware_update_state_.load(); }
@@ -71,7 +68,6 @@ private:
     std::atomic<FirmwareUpdateState> firmware_update_state_{FirmwareUpdateState::UNKNOWN};
     std::atomic<bool> firmware_update_check_active_{false};
     std::atomic<bool> on_device_update_pending_{false};
-    std::atomic<bool> ota_started_on_device_{false};
     std::atomic<uint16_t> latest_version_major_{0};
     std::atomic<uint16_t> latest_version_minor_{0};
     std::atomic<uint16_t> latest_version_patch_{0};

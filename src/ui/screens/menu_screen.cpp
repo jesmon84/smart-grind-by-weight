@@ -76,6 +76,7 @@ void MenuScreen::create(BluetoothManager* bluetooth, GrindController* grind_ctrl
     coast_ratio_label = nullptr;
     motor_latency_slider = nullptr;
     motor_latency_label = nullptr;
+    shaky_bench_toggle = nullptr;
     auto_start_threshold_slider = nullptr;
     auto_start_threshold_label = nullptr;
     display_off_toggle = nullptr;
@@ -723,13 +724,20 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
 
     // Coast compensation section
     create_separator(parent, "Coast");
-    create_description_label(parent, "How much coast the system expects after motor stop. Higher values reduce overshoot.");
+    create_description_label(parent, "The grinder learns what lands after the motor stops. Until a first grind has shown it, higher values stop earlier.");
 
     // Slider for coast ratio (0.70 to 1.50 in 0.05 steps)
     const uint32_t coast_slider_min = static_cast<uint32_t>(GRIND_LATENCY_TO_COAST_RATIO_MIN * kCoastRatioSliderScale + 0.5f);
     const uint32_t coast_slider_max = static_cast<uint32_t>(GRIND_LATENCY_TO_COAST_RATIO_MAX * kCoastRatioSliderScale + 0.5f);
     create_slider_row(parent, "Ratio", &coast_ratio_label, &coast_ratio_slider,
                      lv_color_hex(THEME_COLOR_ACCENT), coast_slider_min, coast_slider_max);
+
+    // Shaky-bench handling (see settle_wait_policy.h). The warning is part of
+    // the description: with it on, a hand on the portafilter can be weighed
+    // as coffee.
+    create_separator(parent, "Shaky Bench");
+    create_description_label(parent, "For a bench that vibrates, such as beside a 3D printer. Keep your hands off the portafilter while it grinds.");
+    create_toggle_row(parent, "Enabled", &shaky_bench_toggle);
 
     // Register events for the toggles (done here because widgets are created lazily)
     using ET = EventBridgeLVGL::EventType;
@@ -784,6 +792,10 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
                            reinterpret_cast<void*>(static_cast<intptr_t>(ET::MOTOR_LATENCY_SLIDER)));
         lv_obj_add_event_cb(motor_latency_slider, EventBridgeLVGL::dispatch_event, LV_EVENT_RELEASED,
                            reinterpret_cast<void*>(static_cast<intptr_t>(ET::MOTOR_LATENCY_SLIDER_RELEASED)));
+    }
+    if (shaky_bench_toggle) {
+        lv_obj_add_event_cb(shaky_bench_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
+                           reinterpret_cast<void*>(static_cast<intptr_t>(ET::SHAKY_BENCH_TOGGLE)));
     }
 }
 
@@ -1708,4 +1720,18 @@ void MenuScreen::update_grind_mode_toggles() {
         lv_slider_set_value(motor_latency_slider, slider_value, LV_ANIM_OFF);
     }
     update_motor_latency_label(motor_latency_ms);
+
+    set_shaky_bench_toggle(grind_controller ? grind_controller->shaky_bench_enabled()
+                                            : GRIND_SHAKY_BENCH_DEFAULT != 0);
+}
+
+void MenuScreen::set_shaky_bench_toggle(bool enabled) {
+    if (!shaky_bench_toggle) {
+        return;
+    }
+    if (enabled) {
+        lv_obj_add_state(shaky_bench_toggle, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(shaky_bench_toggle, LV_STATE_CHECKED);
+    }
 }

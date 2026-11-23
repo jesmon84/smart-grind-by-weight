@@ -4,6 +4,54 @@ This file records the user-visible changes in the community-maintained release
 line. Earlier release history remains available in the original project's
 [GitHub releases](https://github.com/jaapp/smart-grind-by-weight/releases).
 
+## [Unreleased]
+
+### Shaky-bench switch
+
+- Shaky-bench handling, for a grinder on a bench that vibrates, is now a
+  switch under **Menu → Grind Settings → Shaky Bench**, off as shipped. It
+  used to need a firmware built with `-DGRIND_SHAKY_BENCH_DEFAULT=1`. Such
+  a build now stores the handling as on when it first starts on a grinder
+  where it was never set, so it stays on after an update to a standard
+  build, and the switch shows it.
+
+### Update screen
+
+- The display shows the update's progress again during a firmware upload,
+  in place of a dark screen that looked like a broken grinder, dimmed to a
+  third of its normal brightness. During a Bluetooth upload Wi-Fi pauses and
+  the processor runs at 80 MHz while the data arrives, and at full speed
+  again to apply it. The start of an upload is the heaviest load the
+  grinder's 5 V supply sees; at full brightness and full speed the update
+  screen went black there.
+
+### Scale starting
+
+- After power-on, **SCALE STARTING** stays two seconds longer once the scale
+  has zeroed itself, so the first grind does not start on its first readings.
+  A later zeroing is not held.
+
+### Landing on the target
+
+- The motor now stops by what really lands after it stops. Each grind
+  measures what landed after its main run, as time at that run's flow, and
+  the next grind stops early by that time times its own flow, plus 0.15 g.
+  The main run then ends just under the target and one short pulse finishes
+  it. On the grinder this was found on, what landed was steady at about a
+  third of a second of flow, but the old estimate from how soon the first
+  grounds showed on the scale swung from 0.08 g to 0.87 g with the motor
+  shaking the scale, and three grinds in ten ran past 18 g before any
+  correction (18.21, 18.44 and 18.73 g).
+- New beans or a new grind setting that change the flow are allowed for in
+  the same grind, because the flow is measured as it grinds. The learnt time
+  moves at most 60 ms per grind, so one odd grind cannot upset it. The first
+  grind after installing uses the old estimate and **Coast → Ratio**, which
+  matters only until then.
+- A scale whose converter has stopped delivering readings no longer counts
+  as still. A still reading now needs at least half the readings the window
+  should hold; one reading, or none, used to pass, which once started the
+  main run on a weight nobody had measured.
+
 ## [2.0.1] - 2026-11-22
 
 With Wi-Fi on, this firmware can draw more power than the grinder's own 5 V

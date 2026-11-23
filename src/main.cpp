@@ -204,13 +204,17 @@ void loop() {
     uint32_t current_time = millis();
     // The radio is off while a grind runs, if that is switched on (see
     // radio_rest_policy.h). A result waiting on the screen is not a grind.
+    // During a firmware upload over Bluetooth it is off whatever the switch
+    // says: that upload needs no Wi-Fi and strains the supply most.
     static RadioRestSchedule radio_rest;
     const GrindPhase grind_phase = grind_controller.get_phase();
     const bool grind_running = grind_phase != GrindPhase::IDLE &&
                                grind_phase != GrindPhase::COMPLETED &&
                                grind_phase != GrindPhase::TIMEOUT;
+    const bool bluetooth_upload = bluetooth_manager.is_updating();
     network_manager.set_radio_rest(radio_rest.update(
-        current_time, network_manager.rest_while_grinding(), grind_running));
+        current_time, network_manager.rest_while_grinding() || bluetooth_upload,
+        grind_running || bluetooth_upload));
     network_manager.update();
     provisioning_service.update();
     // AsyncTCP requires lwIP's TCP/IP task and mutexes to exist. They are only

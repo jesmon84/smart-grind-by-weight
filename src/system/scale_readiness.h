@@ -21,17 +21,31 @@ struct ScaleSignals {
     bool recent_sample;
 };
 
+// After power-on the scale counts as starting for `startup_hold_ms` more
+// once its first tare is done, while the load cell's first readings settle.
+// Later tares are not held.
 class ScaleReadinessTracker {
 public:
     ScaleReadiness update(const ScaleSignals& signals, uint32_t uptime_ms,
-                          uint32_t startup_timeout_ms) {
+                          uint32_t startup_timeout_ms, uint32_t startup_hold_ms = 0) {
         if (signals.hardware_fault) {
+            first_ready_known_ = false;
             return ScaleReadiness::UNAVAILABLE;
         }
         if (signals.tare_valid && signals.recent_sample && !signals.tare_in_progress) {
+            if (!has_been_ready_) {
+                if (!first_ready_known_) {
+                    first_ready_known_ = true;
+                    first_ready_ms_ = uptime_ms;
+                }
+                if (uptime_ms - first_ready_ms_ < startup_hold_ms) {
+                    return ScaleReadiness::STARTING;
+                }
+            }
             has_been_ready_ = true;
             return ScaleReadiness::READY;
         }
+        first_ready_known_ = false;
         if (!has_been_ready_) {
             return uptime_ms < startup_timeout_ms ? ScaleReadiness::STARTING
                                                   : ScaleReadiness::UNAVAILABLE;
@@ -44,6 +58,9 @@ public:
 
 private:
     bool has_been_ready_ = false;
+    // When the scale first read ready since power-on, while that lasts.
+    bool first_ready_known_ = false;
+    uint32_t first_ready_ms_ = 0;
 };
 
 // Every profile grind tares first, so none can start while the scale is

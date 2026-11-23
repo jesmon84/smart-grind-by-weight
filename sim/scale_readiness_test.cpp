@@ -50,6 +50,30 @@ void fault_and_lost_readings_are_unavailable() {
     assert(running.update(kFault, 91000, kTimeoutMs) == ScaleReadiness::UNAVAILABLE);
 }
 
+void startup_is_held_after_the_first_tare() {
+    constexpr uint32_t kHoldMs = 2000;
+    ScaleReadinessTracker tracker;
+    assert(tracker.update(kBootTare, 5000, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    // First tare done at 7 s: still starting for two seconds.
+    assert(tracker.update(kReady, 7000, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(tracker.update(kReady, 8999, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(!tracker.has_been_ready());
+    assert(tracker.update(kReady, 9000, kTimeoutMs, kHoldMs) == ScaleReadiness::READY);
+    // A later tare is not held.
+    assert(tracker.update(kLaterTare, 60000, kTimeoutMs, kHoldMs) == ScaleReadiness::TARING);
+    assert(tracker.update(kReady, 60500, kTimeoutMs, kHoldMs) == ScaleReadiness::READY);
+}
+
+void the_hold_starts_again_if_readings_drop_out() {
+    constexpr uint32_t kHoldMs = 2000;
+    ScaleReadinessTracker tracker;
+    assert(tracker.update(kReady, 7000, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(tracker.update(kBootTare, 8000, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(tracker.update(kReady, 8500, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(tracker.update(kReady, 10000, kTimeoutMs, kHoldMs) == ScaleReadiness::STARTING);
+    assert(tracker.update(kReady, 10500, kTimeoutMs, kHoldMs) == ScaleReadiness::READY);
+}
+
 void grind_permission() {
     assert(scale_allows_profile_grind(ScaleReadiness::READY, true));
     assert(scale_allows_profile_grind(ScaleReadiness::READY, false));
@@ -68,6 +92,8 @@ int main() {
     later_tare_is_not_startup();
     startup_that_never_finishes_is_unavailable();
     fault_and_lost_readings_are_unavailable();
+    startup_is_held_after_the_first_tare();
+    the_hold_starts_again_if_readings_drop_out();
     grind_permission();
     return 0;
 }

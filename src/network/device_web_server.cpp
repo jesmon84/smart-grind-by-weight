@@ -300,7 +300,6 @@ bool DeviceWebServer::install_available_update() {
     }
     if (!request_ota_preparation()) return false;
     on_device_update_pending_.store(true);
-    ota_started_on_device_.store(true);
     return true;
 }
 
@@ -406,7 +405,6 @@ void DeviceWebServer::recover_from_ota_failure() {
     const std::lock_guard<std::recursive_mutex> ota_lock(ota_mutex_);
     if (ota_active_.load()) return;
     on_device_update_pending_.store(false);
-    ota_started_on_device_.store(false);
     ota_preparation_state_.store(OtaPreparationState::IDLE);
     if (ota_bluetooth_stopped_.exchange(false)) {
         // Arduino BLE retains its server singleton across deinit(false). Re-enabling

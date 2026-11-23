@@ -118,8 +118,15 @@ void WeightGrindStrategy::run_predictive_phase(GrindController& controller,
             float current_flow_rate = controller.weight_sensor->get_flow_rate(flow_rate_calc_window_ms);
 
             if (current_flow_rate > GRIND_FLOW_DETECTION_THRESHOLD_GPS) {
-                controller.motor_stop_target_weight = ((controller.grind_latency_ms * controller.get_coast_ratio()) /
-                                                       (float)SYS_MS_PER_SECOND) * current_flow_rate;
+                controller.main_run_flow_gps_ = current_flow_rate;
+                // Once a grind has taught the after-run time, the stop goes by
+                // that and this run's flow (coast_learning.h). Until then the
+                // time comes from this run's flow start and the coast ratio.
+                controller.motor_stop_target_weight =
+                    controller.coast_learner_.known()
+                        ? controller.coast_learner_.stop_offset_g(current_flow_rate)
+                        : ((controller.grind_latency_ms * controller.get_coast_ratio()) /
+                           (float)SYS_MS_PER_SECOND) * current_flow_rate;
             }
         }
     }
@@ -130,6 +137,10 @@ void WeightGrindStrategy::run_predictive_phase(GrindController& controller,
         controller.grinder->stop();
         controller.predictive_end_weight = loop_data.current_weight;
         controller.pulse_flow_rate = controller.weight_sensor->get_flow_rate_95th_percentile(2500);
+        controller.queue_log_message("[PREDICTIVE] Motor stopped at %.2fg, %.2fg short (%s) at %.2fg/s\n",
+                                     loop_data.current_weight, controller.motor_stop_target_weight,
+                                     controller.coast_learner_.known() ? "learnt after-run time" : "flow-start estimate",
+                                     controller.main_run_flow_gps_);
         controller.switch_phase(GrindPhase::PULSE_SETTLING, loop_data);
     }
 }
@@ -152,6 +163,12 @@ void WeightGrindStrategy::run_pulse_decision_phase(GrindController& controller,
                                         controller.weight_wait_past_limit(), loop_data, &settled_weight,
                                         last_known_weight - GRIND_UNSTEADY_DROP_LIMIT_G) == SettleWait::WAITING) {
         return;
+    }
+
+    // The first settled weight after the main run shows what landed after
+    // the motor stopped: the lesson for the next grind's stop.
+    if (controller.pulse_attempts == 0) {
+        controller.learn_coast_from_main_run(settled_weight);
     }
 
     float conservative_target = controller.target_weight - GRIND_ACCURACY_TOLERANCE_G;

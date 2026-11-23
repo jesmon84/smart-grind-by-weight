@@ -75,7 +75,7 @@ The firmware cannot give the panel voltage. It notices the fault, reports it, an
 - **Resets the touch controller's bus** if it stops answering.
 - **Pauses Wi-Fi while grinding**, if **Menu → Wi-Fi → Pause** is on. The radio is off from the start of a grind until about 15 seconds after it. The switch turns itself on once a grinder has restarted on a brownout, until you choose otherwise.
 - **Records what was running at a brownout restart.** **Last restart** on the web page shows it: whether a grind was running, whether the motor was on and what Wi-Fi was doing.
-- **Draws less power when it can**: the display sleeps during a firmware upload, the processor runs at a third of its speed while the display is dimmed or off, the online update check waits for a quiet moment, and an idle grinder sends an open web page far fewer messages.
+- **Draws less power when it can**: the update screen is dimmed during a firmware upload, Wi-Fi pauses and the processor slows while Bluetooth firmware data arrives, the processor runs at a third of its speed while the display is dimmed or off, the online update check waits for a quiet moment, and an idle grinder sends an open web page far fewer messages.
 
 ### If the Screen Is Black Now
 Switch the grinder off, wait ten seconds, and switch it on again.
@@ -375,12 +375,12 @@ zero.
 
 ### Shaky-bench handling
 
-For a grinder that has to stand on a vibrating bench, build the firmware with
-shaky-bench handling on:
-
-```bash
-PLATFORMIO_BUILD_FLAGS="-DGRIND_SHAKY_BENCH_DEFAULT=1" python3 tools/grinder.py build --hardware v2
-```
+For a grinder that has to stand on a vibrating bench, switch on **Menu →
+Grind Settings → Shaky Bench → Enabled**. It applies from the next grind and
+is off as shipped. A firmware built with
+`PLATFORMIO_BUILD_FLAGS="-DGRIND_SHAKY_BENCH_DEFAULT=1"` switches it on for a
+grinder where it has never been set, and stores that, so it stays on after
+an update to a standard release.
 
 The diagnostic log then has `[SCALE] Shaky-bench handling is on` at the start
 of every grind, and:

@@ -34,8 +34,8 @@ private:
     void restore_normal_display(DisplayManager* display);
     bool is_protected_state() const;
     bool firmware_upload_running() const;
-    void hold_display_off_for_upload(DisplayManager* display);
-    void release_display_after_upload(DisplayManager* display);
+    void show_upload_dimmed(DisplayManager* display);
+    void end_upload_display(DisplayManager* display);
 
     UIManager* ui_manager_;
     ScreensaverController* screensaver_controller_ = nullptr;
@@ -46,6 +46,6 @@ private:
     uint32_t last_weight_activity_ms_ = 0;
     bool screen_dimmed_;
     bool panel_off_;
-    // True while the display is kept dark for a firmware upload
-    bool upload_hold_ = false;
+    // True while the update screen is dimmed for a firmware upload
+    bool upload_dimmed_ = false;
 };

@@ -100,6 +100,9 @@ SCENARIOS = (
     "time_grind_on_a_quiet_bench",
     "time_grind_with_printer_vibration",
     "grinds_across_grinders_doses_and_benches",
+    "the_after_run_time_is_learnt_and_the_stop_follows_it",
+    "new_beans_that_flow_faster_move_the_stop_at_once",
+    "a_scale_gone_quiet_is_not_a_still_scale",
 )
 
 

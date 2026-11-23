@@ -69,6 +69,7 @@ void MenuUIController::register_events() {
     EventBridgeLVGL::register_handler(ET::COAST_RATIO_SLIDER_RELEASED, [this](lv_event_t*) { handle_coast_ratio_slider_released(); });
     EventBridgeLVGL::register_handler(ET::MOTOR_LATENCY_SLIDER, [this](lv_event_t*) { handle_motor_latency_slider(); });
     EventBridgeLVGL::register_handler(ET::MOTOR_LATENCY_SLIDER_RELEASED, [this](lv_event_t*) { handle_motor_latency_slider_released(); });
+    EventBridgeLVGL::register_handler(ET::SHAKY_BENCH_TOGGLE, [this](lv_event_t*) { handle_shaky_bench_toggle(); });
 
     EventBridgeLVGL::register_handler(ET::BRIGHTNESS_NORMAL_SLIDER, [this](lv_event_t*) { handle_brightness_normal_slider(); });
     EventBridgeLVGL::register_handler(ET::BRIGHTNESS_NORMAL_SLIDER_RELEASED, [this](lv_event_t*) { handle_brightness_normal_slider_released(); });
@@ -696,6 +697,23 @@ void MenuUIController::handle_motor_latency_slider_released() {
     }
     ui_manager_->menu_screen.update_motor_latency_label(static_cast<float>(latency_ms));
     LOG_DEBUG_PRINTF("Motor response latency manually set to: %dms\n", latency_ms);
+}
+
+// Stores the choice; it applies from the next grind. A choice that could not
+// be stored is not left showing on the switch.
+void MenuUIController::handle_shaky_bench_toggle() {
+    if (!ui_manager_) return;
+
+    auto* toggle = ui_manager_->menu_screen.get_shaky_bench_toggle();
+    if (!toggle) return;
+
+    const bool enabled = lv_obj_has_state(toggle, LV_STATE_CHECKED);
+    auto* grind_controller = ui_manager_->get_grind_controller();
+    if (!grind_controller || !grind_controller->save_shaky_bench(enabled)) {
+        ui_manager_->menu_screen.set_shaky_bench_toggle(
+            grind_controller ? grind_controller->shaky_bench_enabled() : !enabled);
+        LOG_BLE("Could not save the shaky-bench setting; retaining the stored one\n");
+    }
 }
 
 void MenuUIController::handle_brightness_normal_slider() {

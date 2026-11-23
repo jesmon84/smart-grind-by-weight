@@ -70,6 +70,7 @@
 // Load cell startup normally finishes about 7 s after power-on; past this the
 // Ready screen reports the scale as unavailable instead of still starting.
 #define SYS_SCALE_STARTUP_TIMEOUT_MS 20000
+#define SYS_SCALE_STARTUP_HOLD_MS 2000  // "Scale starting" stays this much longer once the first tare is done
 
 // Finished screen: a cup reading at or below this counts as lifted off. It
 // ends the result timer and triggers Return on Removal.

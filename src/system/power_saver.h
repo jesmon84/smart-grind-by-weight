@@ -10,8 +10,9 @@
 class PowerSaver {
 public:
     // Call from the UI task every cycle. `display_in_use`: the display is on
-    // at its normal brightness, neither dimmed nor off.
-    void update(bool display_in_use, bool grind_active, bool bluetooth_busy);
+    // at its normal brightness, neither dimmed nor off. `receiving_firmware`:
+    // firmware data is arriving over Bluetooth.
+    void update(bool display_in_use, bool grind_active, bool bluetooth_busy, bool receiving_firmware = false);
     // Call from the UI task when the display is about to be switched on. The
     // processor goes to full speed at once, so the screen is drawn quickly
     // without waiting for the next update().

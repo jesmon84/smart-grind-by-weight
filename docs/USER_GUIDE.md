@@ -64,12 +64,13 @@ Access **Menu → Grind Settings** to configure:
   - **Amount slider**: Configure purge/prime amount (0.1g-5.0g, default 1.0g). Amount is a minimum target; actual output will be slightly higher.
   - **"Keep purge grinds from now on" checkbox**: Appears during purge confirmation - switches to Prime mode when checked
 
-  *Explanation:* The time between motor start and grinds hitting the cup (grind latency) is used to predict the coast time (how long grinds will keep coming after the motor is disengaged). Purging clears stale coffee and saturates the grinder with fresh grounds, ensuring accurate latency detection. If you prefer to keep all coffee without manual intervention, select Prime mode.
+  *Explanation:* The grinder stops its motor a little before the target, by what will still land afterwards (the coast). It learns that from every grind: what landed after the motor stopped, as a time, which it multiplies by the flow of the grind in progress. So the main run ends just under the target and one short pulse finishes it, and new beans that grind faster or slower are allowed for at once. Until a first grind has shown the coast, it is estimated from the time between motor start and grinds hitting the cup, scaled by **Coast → Ratio**. Purging clears stale coffee and saturates the grinder with fresh grounds, so what lands is the coffee just ground. If you prefer to keep all coffee without manual intervention, select Prime mode.
 
 ### Basic Operation
 
-After power-on the scale takes about seven seconds to start and zero itself.
-Until then the profile pages show a spinner with **SCALE STARTING**, the GRIND
+After power-on the scale takes about seven seconds to start and zero itself,
+and two seconds more for its first readings to settle. Until then the profile
+pages show a spinner with **SCALE STARTING**, the GRIND
 button is grey and does nothing, and Start on Cup stays off. Keep the scale
 clear while it starts: anything on it becomes part of the zero. If the scale
 has not started after 20 seconds, the pages show **SCALE UNAVAILABLE** in weight
@@ -88,7 +89,7 @@ If the portafilter is lifted off the scale during a grind, the grind stops and t
 
 The scale weighs best on a bench that stands still. A weight grind waits for the scale to read still before it tares, before each correction and before it reports the result. If something shakes the bench, such as a 3D printer on the same surface, the scale never reads still and the grind can wait until its 60-second limit. Keep your hands off the portafilter while a grind runs for the same reason. A weight grind that has not reached its target after 60 seconds stops with **TIMEOUT** and "Target not reached", for example when the hopper is empty, or with "Could not tare" when the scale never came to rest for its zero.
 
-For a grinder that has to stand on a vibrating bench, the firmware can be built with shaky-bench handling: each wait then ends after a few seconds, and a grind that finds its bench shaking works with the average of its readings, so it takes longer but still ends on target. It is off as shipped; see [Troubleshooting](TROUBLESHOOTING.md#shaky-bench-handling) for what it does and how to build it.
+For a grinder that has to stand on a vibrating bench, switch on **Menu → Grind Settings → Shaky Bench → Enabled**: each wait then ends after a few seconds, and a grind that finds its bench shaking works with the average of its readings, so it takes longer but still ends on target. It is off as shipped and applies from the next grind. With it on, keep your hands off the portafilter while it grinds: a hand does not average out and can be weighed as coffee. See [Troubleshooting](TROUBLESHOOTING.md#shaky-bench-handling) for what it does.
 
 > Optional automation (Menu → Grind Settings): enable auto-start and set the cup threshold below the empty cup or portafilter weight. The grinder remembers the weight the scale last rested at and starts as soon as the cup has come to rest at least that much heavier, however long positioning it takes. Auto-return then jumps back to Ready whenever that cup is lifted off again.
 
@@ -180,7 +181,8 @@ Main Screen (swipe left/right between tabs, up/down to toggle weight/time mode i
     |       |-- Purging (Prime/Purge radio buttons)
     |       |-- Amount slider (0.1g-5.0g for purge/prime operation)
     |       |-- Latency slider (30-300ms manual Pulse Tune fallback)
-    |       \-- Coast ratio slider
+    |       |-- Coast ratio slider (only until a first grind has taught the coast)
+    |       \-- Shaky Bench toggle (for a bench that vibrates; off as shipped)
     |
     \-- Info
         +-- Diagnostics
@@ -284,7 +286,7 @@ grinder.
   altogether until you switch it on again for the web page, Home Assistant
   or an update. See
   [Troubleshooting](TROUBLESHOOTING.md#display-goes-black-while-the-grinder-keeps-working).
-- **Firmware updates**: While firmware is uploaded from the web page or over Bluetooth the display stays dark, to spare the grinder's power supply, and a touch does not wake it. Progress shows on the web page or in the upload tool, and the grinder restarts when the upload is done. An update started from the grinder's own menu shows its progress on the display. An update failure warning keeps the display on.
+- **Firmware updates**: While firmware is uploaded, from the web page, over Bluetooth or from the grinder's own menu, the display shows the update's progress at about a third of its normal brightness, to spare the grinder's power supply. During a Bluetooth upload Wi-Fi is paused and the processor runs at a third of its speed while the data arrives. The grinder restarts when the upload is done. An update failure warning keeps the display on.
 
 ---
 

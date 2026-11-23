@@ -19,9 +19,32 @@ constexpr uint32_t kCpuMhzResting = 80U;
 // The clock to run at. Full speed while somebody may be looking at the
 // display, while a grind runs, and while Bluetooth moves data, whose transfers
 // are paced for full speed. The slow clock otherwise: with the display dimmed
-// or off, which includes a firmware upload over Wi-Fi.
-constexpr uint32_t cpu_clock_mhz(bool display_in_use, bool grind_active, bool bluetooth_busy) {
+// or off.
+//
+// Firmware arriving over Bluetooth is the exception: the start of an upload is
+// the heaviest load the grinder's supply sees (a flash erase while the radio
+// sends flat out), and the display's update screen blacked out there at full
+// speed. While the data arrives the processor runs slowly, whatever the
+// display does; applying the patch afterwards runs at full speed again.
+constexpr uint32_t cpu_clock_mhz(bool display_in_use, bool grind_active, bool bluetooth_busy,
+                                 bool receiving_firmware = false) {
+    if (receiving_firmware) {
+        return kCpuMhzResting;
+    }
     return (display_in_use || grind_active || bluetooth_busy) ? kCpuMhzInUse : kCpuMhzResting;
+}
+
+//------------------------------------------------------------------------------
+// Display during a firmware upload
+//------------------------------------------------------------------------------
+// The update screen stays on with its progress, at this part of the normal
+// brightness, and never brighter than the normal brightness itself.
+constexpr float kUploadBrightnessShare = 0.33f;
+
+constexpr float upload_brightness(float normal_brightness, float minimal_brightness) {
+    const float dimmed = normal_brightness * kUploadBrightnessShare;
+    const float floor = minimal_brightness < normal_brightness ? minimal_brightness : normal_brightness;
+    return dimmed > floor ? dimmed : floor;
 }
 
 //------------------------------------------------------------------------------

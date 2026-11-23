@@ -92,10 +92,11 @@ enum class GrinderPurgeMode {
 // next to it). The scale never reads still there, and every wait for a still
 // reading holds the grind until its timeout. With the handling on, the waits
 // below have limits and averages may stand in for still readings (see
-// src/controllers/settle_wait_policy.h). It is off unless the "shaky_bench"
-// preference says otherwise, because with it on a hand kept on the
-// portafilter can be weighed as coffee. Build with
-// -DGRIND_SHAKY_BENCH_DEFAULT=1 to have it on.
+// src/controllers/settle_wait_policy.h). It is off until switched on under
+// Menu → Grind Settings → Shaky Bench (preference "shaky_bench"), because with
+// it on a hand kept on the portafilter can be weighed as coffee. A build made
+// with -DGRIND_SHAKY_BENCH_DEFAULT=1 switches it on for a grinder that has no
+// stored choice yet, and stores that.
 #ifndef GRIND_SHAKY_BENCH_DEFAULT
 #define GRIND_SHAKY_BENCH_DEFAULT 0
 #endif

@@ -105,7 +105,7 @@ a V2 display going black or a restart in the middle of a grind. **Menu → Wi-Fi
 → Enabled** switches Wi-Fi off, and **Pause** rests it while a grind runs. If
 you only use Wi-Fi for firmware updates, leave it off and switch it on when
 you want to update. The processor also runs slower while the display is
-dimmed, and the display sleeps during a firmware upload.
+dimmed, and the update screen is dimmed during a firmware upload.
 
 **Developer tooling.** The desktop simulator runs on macOS and Linux as well as
 Windows, with layout checks that catch overlapping text before it reaches the

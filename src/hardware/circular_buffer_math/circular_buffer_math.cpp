@@ -258,8 +258,24 @@ bool CircularBufferMath::get_window_delta(uint32_t window_ms, int32_t* delta_out
     return true;
 }
 
+// Readings a window must hold before it can show a still scale: half of what
+// the converter delivers in that time, and never fewer than two. One reading,
+// or none, has no spread at all, so a scale that had stopped delivering (as
+// the converter can for a second when the motor starts) used to count as
+// perfectly still.
+int CircularBufferMath::min_samples_for_stillness(uint32_t window_ms) {
+    const int expected = static_cast<int>((window_ms * HW_LOADCELL_SAMPLE_RATE_SPS) / 1000U);
+    return std::max(2, (expected + 1) / 2);
+}
+
 bool CircularBufferMath::is_settled(uint32_t window_ms, int32_t threshold_raw_units) const {
-    float std_dev = get_standard_deviation_raw(window_ms);
+    const int capacity = calculate_max_samples_for_window(window_ms);
+    if (capacity < min_samples_for_stillness(window_ms)) return false;
+    int32_t* window_samples = (int32_t*)alloca(capacity * sizeof(int32_t));
+    const int window_count = get_samples_in_window(window_ms, window_samples, capacity);
+    if (window_count < min_samples_for_stillness(window_ms)) return false;
+
+    float std_dev = calculate_standard_deviation(window_samples, window_count);
     bool settled = std_dev <= threshold_raw_units;
     
     // Debug output every 1s during settling checks

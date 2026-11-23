@@ -79,6 +79,7 @@ struct Controller {
  float final_weight=12; uint8_t pulse_attempts=2;
  FlashOpRequest stored{};
  bool queue_flash_operation(const FlashOpRequest& request) { stored=request; return accept; }
+ void queue_learned_coast_save() {}
  bool terminal() {
 ''' + terminal + r'''
  }

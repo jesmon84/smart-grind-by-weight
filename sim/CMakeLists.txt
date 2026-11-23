@@ -169,6 +169,13 @@ target_include_directories(run-snapshot-test PRIVATE
     "${PROJECT_ROOT}/src"
 )
 
+add_executable(coast-learning-test
+    coast_learning_test.cpp
+)
+target_include_directories(coast-learning-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
 if(MSVC)
     target_compile_options(smart-grind-sim PRIVATE /W4 /permissive-)
 endif()
@@ -220,4 +227,6 @@ if(BUILD_TESTING)
     set_tests_properties(radio_rest_policy PROPERTIES TIMEOUT 5)
     add_test(NAME run_snapshot COMMAND run-snapshot-test)
     set_tests_properties(run_snapshot PROPERTIES TIMEOUT 5)
+    add_test(NAME coast_learning COMMAND coast-learning-test)
+    set_tests_properties(coast_learning PROPERTIES TIMEOUT 5)
 endif()

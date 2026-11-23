@@ -43,13 +43,19 @@ uint32_t clock_ms = 100;
 unsigned long millis() { return clock_ms; }
 struct GrindLoopData { unsigned long now = 0; };
 struct FlashOpRequest {
-    enum Type { START_GRIND_SESSION, END_GRIND_SESSION, UPDATE_MANUAL_RUNTIME } operation_type;
+    enum Type { START_GRIND_SESSION, END_GRIND_SESSION, UPDATE_MANUAL_RUNTIME, SAVE_LEARNED_COAST } operation_type;
     GrindSessionDescriptor descriptor{};
     char result_string[32]{};
     float start_weight = 0, final_weight = 0;
     uint8_t pulse_count = 0;
     uint32_t motor_runtime_ms = 0;
     uint32_t completed_at_ms = 0;
+    float learned_coast_ms = 0;
+    uint32_t learned_coast_grinds = 0;
+};
+struct StoredPreferences {
+    void putFloat(const char*, float) {}
+    void putInt(const char*, int) {}
 };
 struct Queue { std::deque<FlashOpRequest> requests; unsigned capacity = 1; };
 using BaseType_t = int;
@@ -113,6 +119,10 @@ public:
     GrindSessionDescriptor session_descriptor{};
     int strategy_context = 0;
     void queue_manual_runtime(uint32_t) {}
+    void queue_learned_coast_save() {}
+    StoredPreferences* preferences = nullptr;
+    static constexpr const char* PREF_KEY_COAST_LEARNT_MS = "coast_learn_ms";
+    static constexpr const char* PREF_KEY_COAST_LEARNT_GRINDS = "coast_learn_n";
     void switch_phase(GrindPhase p, const GrindLoopData& = {}) { phase = p; }
     bool queue_terminal_session();
     bool queue_flash_operation(const FlashOpRequest&);

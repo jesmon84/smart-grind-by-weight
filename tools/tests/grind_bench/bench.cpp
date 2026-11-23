@@ -183,6 +183,7 @@ public:
     int bad_conversions = 0;     // The next conversions read bad_conversion_g instead
     double bad_conversion_g = 0.0;
     uint32_t calm_until_ms = 0;  // Until then the bench holds still
+    uint32_t silent_until_ms = 0;  // Until then the converter delivers nothing
 
     // The grinder
     double flow_gps = 1.7;
@@ -241,7 +242,7 @@ public:
         for (uint32_t elapsed = 0; elapsed < max_ms; ++elapsed) {
             ++clock_ms;
             step_grinder();
-            if (clock_ms % kAdcPeriodMs == 0) {
+            if (clock_ms % kAdcPeriodMs == 0 && clock_ms >= silent_until_ms) {
                 sample_scale();
             }
             if (clock_ms % kControlPeriodMs == 0) {
@@ -284,6 +285,15 @@ public:
     GrindOutcome grind(float target_g, GrindMode mode = GrindMode::WEIGHT, uint32_t time_ms = 0) {
         start(target_g, mode, time_ms);
         return finish();
+    }
+
+    // The settled weight the first correction was decided on: where the main
+    // run ended once its grounds were in. NAN if the grind never got there.
+    double after_main_run_g() const {
+        for (const GrindEvent& event : session_record.events) {
+            if (event.phase_id == static_cast<uint8_t>(GrindPhase::PULSE_DECISION)) return event.end_weight;
+        }
+        return NAN;
     }
 
     // Longest time any one visit to `phase` took in the session just logged.
@@ -1350,6 +1360,96 @@ static void grinds_across_grinders_doses_and_benches() {
     }
 }
 
+// Grounds that land after the motor stops, as time: the drop down the chute
+// and the burrs running on at half flow.
+static double after_run_ms(const Bench& bench) { return bench.transit_ms + bench.spin_down_ms / 2.0; }
+
+static void the_after_run_time_is_learnt_and_the_stop_follows_it() {
+    // An estimate from the flow start that comes out short, as the motor's
+    // shaking made it on a real grinder: the first grind overshoots. It
+    // teaches the grinder what really lands after the stop, and from then on
+    // the main run ends just short of the target and a correction finishes it.
+    Bench bench(quiet_scatter());
+    bench.prefs.values[GrindController::PREF_KEY_COAST_RATIO] = GRIND_LATENCY_TO_COAST_RATIO_MIN;
+    ready_with_portafilter(bench);
+    const GrindOutcome first = bench.grind(18.0f);
+    CHECK(first.phase == GrindPhase::COMPLETED);
+    CHECK(first.grounds_g > 18.05);
+    CHECK(log_contains("flow-start estimate"));
+    // What lands, as the scale sees it: the reading at the stop trails the
+    // weight by part of its smoothing window.
+    CHECK(near(bench.controller.get_learned_coast_ms(), after_run_ms(bench) + 50.0, 80.0));
+
+    for (int grind = 2; grind <= 6; ++grind) {
+        take_away_and_return(bench);
+        const GrindOutcome outcome = bench.grind(18.0f);
+        CHECK(outcome.phase == GrindPhase::COMPLETED);
+        // The main run ends just short, about the margin under the target...
+        CHECK(near(bench.after_main_run_g(), 18.0 - kCoastLearnMarginG, 0.10));
+        CHECK(bench.after_main_run_g() < 18.0 - GRIND_ACCURACY_TOLERANCE_G);
+        // ...and a correction or two finish it.
+        CHECK(near(outcome.grounds_g, 18.0, 0.08));
+        CHECK(outcome.pulses >= 1 && outcome.pulses <= 3);
+        CHECK(log_contains("learnt after-run time"));
+    }
+    // Kept across a restart.
+    CHECK(bench.prefs.getFloat(GrindController::PREF_KEY_COAST_LEARNT_MS, 0.0f) > 0.0f);
+    CHECK(bench.prefs.getInt(GrindController::PREF_KEY_COAST_LEARNT_GRINDS, 0) == 6);
+}
+
+static void new_beans_that_flow_faster_move_the_stop_at_once() {
+    // The time is learnt; the flow comes from the grind in progress. Beans
+    // that grind 40 % faster need no grinds to learn anything.
+    Bench bench(normal_scatter);
+    ready_with_portafilter(bench);
+    for (int grind = 1; grind <= 3; ++grind) {
+        CHECK(bench.grind(18.0f).phase == GrindPhase::COMPLETED);
+        take_away_and_return(bench);
+    }
+    const double learnt_ms = bench.controller.get_learned_coast_ms();
+    bench.flow_gps = 2.4;
+    for (int grind = 1; grind <= 2; ++grind) {
+        const GrindOutcome outcome = bench.grind(18.0f);
+        CHECK(outcome.phase == GrindPhase::COMPLETED);
+        CHECK(near(bench.after_main_run_g(), 18.0 - kCoastLearnMarginG, 0.10));
+        CHECK(near(outcome.grounds_g, 18.0, 0.10));
+        take_away_and_return(bench);
+    }
+    CHECK(near(bench.controller.get_learned_coast_ms(), learnt_ms, 80.0));
+    // And slower ones, as well.
+    bench.flow_gps = 1.2;
+    const GrindOutcome slow = bench.grind(18.0f);
+    CHECK(near(bench.after_main_run_g(), 18.0 - kCoastLearnMarginG, 0.10));
+    CHECK(near(slow.grounds_g, 18.0, 0.10));
+}
+
+static void a_scale_gone_quiet_is_not_a_still_scale() {
+    // On a real grinder the converter delivered nothing for most of a second
+    // as the motor started, then one reading. A window holding one reading,
+    // or none, has no spread at all; it must not count as a still scale, or
+    // a grind acts on a weight nobody has measured.
+    Bench bench(quiet_scatter());
+    ready_with_portafilter(bench);
+    const uint32_t window_ms = GRIND_SCALE_PRECISION_SETTLING_TIME_MS;
+    CHECK(bench.sensor.is_settled(window_ms));
+
+    const uint32_t silence_ms = 900;
+    bench.silent_until_ms = clock_ms + silence_ms;
+    bench.idle(window_ms + kAdcPeriodMs);  // Every reading has left the window
+    CHECK(!bench.sensor.has_recent_sample() || !bench.sensor.is_settled(window_ms));
+    CHECK(!bench.sensor.is_settled(window_ms));
+    // Up to the first reading after the silence
+    bench.idle(silence_ms - window_ms - kAdcPeriodMs + kAdcPeriodMs);
+    CHECK(!bench.sensor.is_settled(window_ms));
+    bench.idle(window_ms);                 // A window's worth of fresh readings
+    CHECK(bench.sensor.is_settled(window_ms));
+
+    // And a grind still runs normally afterwards.
+    const GrindOutcome outcome = bench.grind(18.0f);
+    CHECK(outcome.phase == GrindPhase::COMPLETED);
+    CHECK(near(outcome.grounds_g, 18.0, 0.10));
+}
+
 int main(int argc, char** argv) {
     if (argc != 4) {
         std::fprintf(stderr, "usage: bench <scenario> <printer vibration trace> <normal bench trace>\n");
@@ -1403,6 +1503,10 @@ int main(int argc, char** argv) {
         {"time_grind_on_a_quiet_bench", time_grind_on_a_quiet_bench},
         {"time_grind_with_printer_vibration", time_grind_with_printer_vibration},
         {"grinds_across_grinders_doses_and_benches", grinds_across_grinders_doses_and_benches},
+        {"the_after_run_time_is_learnt_and_the_stop_follows_it",
+         the_after_run_time_is_learnt_and_the_stop_follows_it},
+        {"new_beans_that_flow_faster_move_the_stop_at_once", new_beans_that_flow_faster_move_the_stop_at_once},
+        {"a_scale_gone_quiet_is_not_a_still_scale", a_scale_gone_quiet_is_not_a_still_scale},
     };
     const auto scenario = scenarios.find(argv[1]);
     if (scenario == scenarios.end()) {

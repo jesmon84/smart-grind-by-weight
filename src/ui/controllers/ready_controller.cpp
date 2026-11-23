@@ -67,7 +67,8 @@ void ReadyUIController::refresh_scale_readiness() {
     }
 
     const ScaleReadiness previous = scale_readiness_;
-    scale_readiness_ = scale_tracker_.update(signals, millis(), SYS_SCALE_STARTUP_TIMEOUT_MS);
+    scale_readiness_ = scale_tracker_.update(signals, millis(), SYS_SCALE_STARTUP_TIMEOUT_MS,
+                                             SYS_SCALE_STARTUP_HOLD_MS);
     if (scale_readiness_ != previous) {
         LOG_BLE("[SCALE] Ready screen status: %s\n",
                 scale_readiness_ == ScaleReadiness::READY      ? "ready" :

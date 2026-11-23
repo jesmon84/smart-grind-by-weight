@@ -16,6 +16,15 @@ void processor_clock() {
     assert(cpu_clock_mhz(false, true, false) == kCpuMhzInUse);
     assert(cpu_clock_mhz(false, false, true) == kCpuMhzInUse);
     assert(cpu_clock_mhz(true, true, true) == kCpuMhzInUse);
+    // Firmware arriving over Bluetooth runs slowly, whatever else is going on.
+    assert(cpu_clock_mhz(true, false, true, true) == kCpuMhzResting);
+    assert(cpu_clock_mhz(true, false, true, false) == kCpuMhzInUse);
+
+    // The update screen during an upload: a third of the normal brightness,
+    // never below the lowest the display allows, never above normal.
+    assert(upload_brightness(1.0f, 0.1f) > 0.32f && upload_brightness(1.0f, 0.1f) < 0.34f);
+    assert(upload_brightness(0.15f, 0.1f) == 0.1f);
+    assert(upload_brightness(0.05f, 0.1f) == 0.05f);
 
     // The radio does not work below 80 MHz.
     static_assert(kCpuMhzResting >= 80U);

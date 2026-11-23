@@ -12,10 +12,10 @@ namespace {
 constexpr uint32_t kClockCheckIntervalMs = 1000U;
 }
 
-void PowerSaver::update(bool display_in_use, bool grind_active, bool bluetooth_busy) {
+void PowerSaver::update(bool display_in_use, bool grind_active, bool bluetooth_busy, bool receiving_firmware) {
     display_in_use_.store(display_in_use);
 
-    const uint32_t wanted_mhz = cpu_clock_mhz(display_in_use, grind_active, bluetooth_busy);
+    const uint32_t wanted_mhz = cpu_clock_mhz(display_in_use, grind_active, bluetooth_busy, receiving_firmware);
     const uint32_t now_ms = millis();
     const bool newly_wanted = wanted_mhz != wanted_mhz_;
     wanted_mhz_ = wanted_mhz;

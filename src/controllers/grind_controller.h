@@ -8,6 +8,7 @@
 #include "grind_session.h"
 #include "grind_session_result.h"
 #include "grind_strategy.h"
+#include "coast_learning.h"
 #include "net_weight_guard.h"
 #include "settle_wait_policy.h"
 #include "vessel_weight_tracker.h"
@@ -27,7 +28,8 @@ struct FlashOpRequest {
     enum Type {
         START_GRIND_SESSION,
         END_GRIND_SESSION,
-        UPDATE_MANUAL_RUNTIME
+        UPDATE_MANUAL_RUNTIME,
+        SAVE_LEARNED_COAST
     };
     
     Type operation_type;
@@ -38,6 +40,8 @@ struct FlashOpRequest {
     uint8_t pulse_count;     // For END_GRIND_SESSION
     uint32_t completed_at_ms; // Absolute clock at terminal phase entry, not save time
     uint32_t motor_runtime_ms; // For UPDATE_MANUAL_RUNTIME
+    float learned_coast_ms;    // For SAVE_LEARNED_COAST
+    uint32_t learned_coast_grinds;
 };
 
 // Log message structure for Core 0 → Core 1 communication
@@ -200,6 +204,13 @@ private:
     float flow_baseline_weight_ = 0.0f;
     bool flow_baseline_known_ = false;
 
+    // The time coffee keeps landing after the motor stops, learnt from past
+    // grinds (coast_learning.h), and the main run's flow when it last measured
+    // it, which sets the stop and, once the grounds are in, the lesson.
+    CoastLearner coast_learner_;
+    float main_run_flow_gps_ = 0.0f;
+    bool coast_save_pending_ = false;
+
     DiagnosticsController* diagnostics_controller_ = nullptr;
 
     // Motor response latency - runtime configurable
@@ -278,6 +289,8 @@ public:
     static constexpr const char* PREF_KEY_COAST_RATIO = "coast_ratio";
     static constexpr const char* PREF_KEY_LAST_GRIND_RUNTIME = "last_grind_ms";
     static constexpr const char* PREF_KEY_SHAKY_BENCH = "shaky_bench";
+    static constexpr const char* PREF_KEY_COAST_LEARNT_MS = "coast_learn_ms";
+    static constexpr const char* PREF_KEY_COAST_LEARNT_GRINDS = "coast_learn_n";
     GrindMode get_mode() const { const auto control_lock = lock_control(); return mode; }
     GrindSessionDescriptor get_session_descriptor() const { const auto control_lock = lock_control(); return session_descriptor; }
     
@@ -310,6 +323,14 @@ public:
     void set_coast_ratio(float value);
     void load_coast_ratio();
     bool save_coast_ratio(float value);
+
+    // Shaky-bench handling (Menu → Grind Settings → Shaky Bench): the stored
+    // choice, which a grind reads as it starts.
+    bool shaky_bench_enabled() const;
+    bool save_shaky_bench(bool enabled);
+
+    // The after-run time learnt from past grinds; 0 until a grind has taught it.
+    float get_learned_coast_ms() const { const auto control_lock = lock_control(); return coast_learner_.known() ? coast_learner_.coast_ms() : 0.0f; }
 
     // Grind freshness accessors
     bool get_grinder_purged_since_boot() const { const auto control_lock = lock_control(); return grinder_purged_since_boot; }
@@ -370,4 +391,10 @@ private:
     // `title` replaces the "ERROR" heading on the error screen.
     void set_error_message(const char* message, const char* title = nullptr);
     void queue_manual_runtime(uint32_t now_ms);
+
+    // Learnt after-run time: read at start-up, taught by each main run and
+    // stored from the UI task through the flash queue.
+    void load_learned_coast();
+    void learn_coast_from_main_run(float settled_weight);
+    void queue_learned_coast_save();
 };
