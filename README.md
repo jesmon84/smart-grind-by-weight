@@ -44,6 +44,13 @@ https://github.com/user-attachments/assets/e20ce3e2-417e-4a3b-bb48-05591fce9418
 </tr>
 </table>
 
+<table>
+<tr>
+<td align="center" width="50%"><a href="https://makerworld.com/en/models/3681059-eureka-specialita-latch-holder-grind-by-weight"><img src="media/makerworld_specialita_latch_holder.jpg" alt="Specialita latch holder on the grinder" width="100%"></a><br><sub><a href="https://makerworld.com/en/models/3681059-eureka-specialita-latch-holder-grind-by-weight">Specialita latch holder on MakerWorld</a></sub></td>
+<td align="center" width="50%"><a href="https://makerworld.com/en/models/3678273-eureka-specialita-magnetic-tray-grind-by-weight"><img src="media/makerworld_specialita_magnetic_tray.jpg" alt="Specialita magnetic tray on the grinder" width="100%"></a><br><sub><a href="https://makerworld.com/en/models/3678273-eureka-specialita-magnetic-tray-grind-by-weight">Specialita magnetic tray on MakerWorld</a></sub></td>
+</tr>
+</table>
+
 ## What this fork adds
 
 Screens below are rendered from the production firmware's UI code by the
