@@ -2,7 +2,7 @@
 
 Portafilter holder for a Eureka Mignon Specialità fitted with this mod. It screws onto the load cell, so the scale weighs the portafilter while you grind. A raised back wall with a lip hooks over the rim of a 58 mm dosing funnel and holds the portafilter steady, and a slide-in cover hides the screws. The cup and back wall lean back 5° so the grounds land in the middle of the basket.
 
-MakerWorld (print profile, BOM and video): [Eureka Specialita Latch Holder – Grind by Weight](https://makerworld.com/en/@PrinterMcGee)
+MakerWorld (print profile, BOM and video): [Eureka Specialita Latch Holder – Grind by Weight](https://makerworld.com/en/models/3681059-eureka-specialita-latch-holder-grind-by-weight)
 
 <img src="images/on-the-grinder.jpg" width="32%" alt="Latch holder on the grinder"> <img src="images/in-use.jpg" width="32%" alt="Portafilter latched in the holder during a grind"> <img src="images/screws-cover-off.jpg" width="32%" alt="Holder with the screw cover removed">
 
@@ -24,7 +24,7 @@ MakerWorld (print profile, BOM and video): [Eureka Specialita Latch Holder – G
 
 ## Print settings
 
-The H3C profile uses Bambu ABS-GF on a 0.4 mm nozzle: 0.20 mm layers, 3 walls, 15% infill, textured PEI plate. Tree supports are on (build plate only); they're only needed under the load cell pocket inside the base.
+The H3C profile uses Bambu ABS-GF on a 0.4 mm nozzle: 0.20 mm layers, 3 walls, 15% infill, textured PEI plate. Tree supports are on (build plate only); they're only needed under the load cell pocket inside the base. About 2.9 h and 76 g.
 
 ABS-GF needs an enclosed printer. On an open-frame printer, use PETG or a matte PLA. The cup floor is tilted 5°, so expect small ridges where the layers step.
 
