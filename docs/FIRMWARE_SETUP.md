@@ -50,6 +50,9 @@ Before flashing, verify that the selected image matches the display generation. 
      stable release there
    - The grinder chooses the matching V1 or V2 image, validates it, installs it
      and restarts; keep it powered until the update completes
+   - Wi-Fi can be switched off with the **Enabled** toggle at the top of
+     **Menu → Wi-Fi**; the choice is kept across restarts. Turn it back on
+     when you want to update. Grinding and Bluetooth updates work with Wi-Fi off
    - Manual `.bin` upload from the
      [Releases page](https://github.com/s31teg/smart-grind-by-weight/releases)
      remains available as an advanced fallback

@@ -89,6 +89,9 @@ void ProvisioningService::update() {
     update_improv_serial();
 
     const NetworkState state = network_manager.state();
+    // Wi-Fi switched off while the setup network was up: stop serving it, so
+    // turning Wi-Fi back on starts setup again cleanly if it is still needed.
+    if (active_ && state == NetworkState::WIFI_DISABLED) stop_dns();
     if (!active_ && (state == NetworkState::WIFI_NO_CREDENTIALS ||
                      state == NetworkState::WIFI_SETUP_REQUIRED)) {
         start();

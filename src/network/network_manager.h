@@ -24,6 +24,9 @@ public:
     void update();
 
     bool set_enabled(bool enabled);
+    // Safe to call from any task: the main loop applies the change on its next
+    // update(), so Wi-Fi is never started or stopped from the UI task.
+    void request_enabled(bool enabled);
     bool set_credentials(const String& ssid, const String& password);
     bool connect_saved_credentials();
     void clear_credentials();
@@ -48,14 +51,24 @@ public:
 private:
     static constexpr uint32_t CONNECT_TIMEOUT_MS = 15000;
     static constexpr uint32_t RETRY_DELAY_MS = 30000;
+    // A network that has never been joined since boot is retried this many
+    // times, after a short pause, before setup mode starts. A weak or busy
+    // access point often accepts the second or third attempt.
+    static constexpr uint8_t FIRST_JOIN_ATTEMPTS = 3;
+    static constexpr uint32_t FIRST_JOIN_RETRY_DELAY_MS = 5000;
 
     Preferences* preferences_ = nullptr;
     std::atomic<NetworkState> state_{NetworkState::WIFI_DISABLED};
     std::atomic<bool> initialized_{false};
     std::atomic<bool> enabled_{false};
+    // Pending on/off request from another task: 0 none, 1 off, 2 on.
+    std::atomic<uint8_t> enable_request_{0};
     // Written by the Wi-Fi event task, read when a join attempt times out.
     std::atomic<uint16_t> last_disconnect_reason_{wifi_disconnect_reason::NONE};
     std::atomic<WifiJoinFailure> last_join_failure_{WifiJoinFailure::NONE};
+    // ESP-IDF reason code behind last_join_failure_, shown with the summary.
+    std::atomic<uint16_t> last_join_failure_reason_{wifi_disconnect_reason::NONE};
+    uint8_t first_join_attempts_ = 0;
     bool ever_connected_ = false;
     bool mdns_started_ = false;
     uint32_t state_changed_at_ms_ = 0;
@@ -66,6 +79,8 @@ private:
 
     void load_settings();
     void begin_connection();
+    // Forget earlier join failures before a connection the user asked for.
+    void reset_join_attempts();
     void handle_connected();
     void stop_network();
     void set_state(NetworkState state);

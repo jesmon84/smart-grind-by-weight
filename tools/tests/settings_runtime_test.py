@@ -48,6 +48,7 @@ struct Hardware {DisplayManager display;DisplayManager* get_display(){return &di
 struct UIManager {
  Hardware* hardware_manager;
  struct {bool auto_start_enabled=false,auto_return_enabled=false;float auto_start_threshold_g=50;uint32_t last_auto_start_ms=0,last_auto_return_ms=0;} auto_actions_;
+ struct {int resets=0;void reset(){++resets;}} auto_start_tracker_;
  bool refresh_auto_action_settings(bool);
 };
 ''' + method(ui, "bool UIManager::refresh_auto_action_settings(") + r'''
@@ -66,6 +67,7 @@ int main(){
  assert(!ui.refresh_auto_action_settings(true));assert(!screen.apply_runtime_settings(true));
  assert(ui.auto_actions_.auto_start_threshold_g==50 && !ui.auto_actions_.auto_start_enabled);
  assert(screen.timing_settings_.idle_timeout_s==300 && screen.restores==0);
+ assert(ui.auto_start_tracker_.resets==0);
  Preferences::open=true;
  for(auto key:{"auto_start","auto_return","start_delta_g"}){
    Preferences::bad=key;assert(!ui.refresh_auto_action_settings(true));
@@ -78,6 +80,8 @@ int main(){
  Preferences::bad="";
  assert(ui.refresh_auto_action_settings(true));assert(screen.apply_runtime_settings(true));
  assert(ui.auto_actions_.auto_start_enabled && ui.auto_actions_.auto_start_threshold_g==75);
+ // Only a successful reload forgets the auto-start baseline.
+ assert(ui.auto_start_tracker_.resets==1);
  assert(screen.timing_settings_.idle_timeout_s==120 && screen.restores==1);
 }
 '''

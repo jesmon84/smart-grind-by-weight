@@ -22,6 +22,8 @@
 namespace {
 constexpr int32_t kAdcMaximumRaw = 0xFFFFFF;
 constexpr int32_t kAdcSaturationMargin = 0x00FFFF;
+// Half a second of rail readings at 10 SPS before the signal is reported out of range.
+constexpr uint8_t kRailSamplesForOutOfRange = 5;
 }
 
 WeightSensor::WeightSensor() {
@@ -750,6 +752,10 @@ bool WeightSensor::sample_and_feed_filter() {
             // let these refresh freshness, contaminate filters, or complete tare.
             if (raw_adc <= kAdcSaturationMargin ||
                 raw_adc >= kAdcMaximumRaw - kAdcSaturationMargin) {
+                if (consecutive_rail_samples_ < UINT8_MAX) consecutive_rail_samples_++;
+                if (consecutive_rail_samples_ >= kRailSamplesForOutOfRange) {
+                    signal_out_of_range_.store(true);
+                }
                 static uint32_t last_saturation_log_ms = 0;
                 if (last_saturation_log_ms == 0 || timestamp - last_saturation_log_ms >= 5000) {
                     LOG_BLE("WeightSensor: HX711 input near ADC rail - raw=%ld; check load-cell wiring and preload\n",
@@ -758,6 +764,8 @@ bool WeightSensor::sample_and_feed_filter() {
                 }
                 return false;
             }
+            consecutive_rail_samples_ = 0;
+            signal_out_of_range_.store(false);
             // Thread-safe sample feeding (CircularBufferMath is single-producer safe)
             raw_filter.add_sample(raw_adc, timestamp);
             last_sample_ms_.store(timestamp);

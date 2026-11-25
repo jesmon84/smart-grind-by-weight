@@ -17,6 +17,7 @@ class SessionCompletionTest(unittest.TestCase):
             "void GrindController::process_queued_flash_operations()",
             "void GrindController::return_to_idle()",
             "void GrindController::stop_grind()",
+            "void GrindController::queue_manual_runtime(",
             "void GrindController::start_additional_pulse()",
             "bool GrindController::can_pulse() const",
         ))
@@ -108,6 +109,7 @@ public:
     GrinderPurgeMode grinder_purge_mode_for_session{};
     float grinder_purge_amount_g_for_session = 1;
     char last_error_message[32]{};
+    char last_error_title[16]{};
     Strategy* active_strategy = nullptr;
     GrindSessionDescriptor session_descriptor{};
     int strategy_context = 0;
@@ -117,6 +119,7 @@ public:
     void process_queued_flash_operations();
     void return_to_idle();
     void stop_grind();
+    void queue_manual_runtime(uint32_t now_ms);
     void start_additional_pulse();
     bool can_pulse() const;
 };
