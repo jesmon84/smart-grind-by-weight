@@ -24,6 +24,9 @@ public:
     void update();
 
     bool set_enabled(bool enabled);
+    // Safe to call from any task: the main loop applies the change on its next
+    // update(), so Wi-Fi is never started or stopped from the UI task.
+    void request_enabled(bool enabled);
     bool set_credentials(const String& ssid, const String& password);
     bool connect_saved_credentials();
     void clear_credentials();
@@ -58,6 +61,8 @@ private:
     std::atomic<NetworkState> state_{NetworkState::WIFI_DISABLED};
     std::atomic<bool> initialized_{false};
     std::atomic<bool> enabled_{false};
+    // Pending on/off request from another task: 0 none, 1 off, 2 on.
+    std::atomic<uint8_t> enable_request_{0};
     // Written by the Wi-Fi event task, read when a join attempt times out.
     std::atomic<uint16_t> last_disconnect_reason_{wifi_disconnect_reason::NONE};
     std::atomic<WifiJoinFailure> last_join_failure_{WifiJoinFailure::NONE};

@@ -58,7 +58,18 @@ void SmartGrindNetworkManager::init(Preferences* preferences) {
 }
 
 void SmartGrindNetworkManager::update() {
-    if (!initialized_.load() || !enabled_.load()) return;
+    if (!initialized_.load()) return;
+
+    const uint8_t request = enable_request_.exchange(0);
+    if (request != 0) {
+        const bool enable = request == 2;
+        if (enable != enabled_.load()) {
+            LOG_BLE("[WIFI] Turned %s from the menu\n", enable ? "on" : "off");
+            set_enabled(enable);
+        }
+    }
+
+    if (!enabled_.load()) return;
 
     const wl_status_t wifi_status = WiFi.status();
     if (wifi_status == WL_CONNECTED) {
@@ -123,6 +134,10 @@ bool SmartGrindNetworkManager::set_enabled(bool enabled) {
         begin_connection();
     }
     return true;
+}
+
+void SmartGrindNetworkManager::request_enabled(bool enabled) {
+    enable_request_.store(enabled ? 2 : 1);
 }
 
 bool SmartGrindNetworkManager::set_credentials(const String& ssid, const String& password) {

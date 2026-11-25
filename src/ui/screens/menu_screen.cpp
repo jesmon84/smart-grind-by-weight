@@ -51,6 +51,7 @@ void MenuScreen::create(BluetoothManager* bluetooth, GrindController* grind_ctrl
     scale_tare_button = nullptr;
     scale_item = nullptr;
     network_page = nullptr;
+    network_toggle = nullptr;
     network_status_label = nullptr;
     network_detail_label = nullptr;
     network_qr = nullptr;
@@ -350,6 +351,14 @@ void MenuScreen::create_network_page(lv_obj_t* parent) {
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_AUTO);
 
+    create_toggle_row(parent, "Enabled", &network_toggle);
+    if (network_toggle) {
+        if (network_manager.is_enabled()) lv_obj_add_state(network_toggle, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(
+            network_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
+            reinterpret_cast<void*>(static_cast<intptr_t>(EventBridgeLVGL::EventType::WIFI_TOGGLE)));
+    }
+
     network_status_label = lv_label_create(parent);
     lv_obj_set_style_text_font(network_status_label, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(network_status_label, lv_color_hex(THEME_COLOR_TEXT_SECONDARY), 0);
@@ -397,8 +406,10 @@ void MenuScreen::update_network_status() {
     String qr_payload;
     switch (network_manager.state()) {
         case NetworkState::WIFI_DISABLED:
-            status = "Wi-Fi disabled";
-            detail = "Wi-Fi can be enabled after setup support is complete.";
+            status = network_manager.is_enabled() ? "Starting Wi-Fi" : "Wi-Fi off";
+            detail = network_manager.is_enabled()
+                         ? String()
+                         : String("Turn on to connect or install updates.\nBluetooth updates still work.");
             break;
         case NetworkState::WIFI_NO_CREDENTIALS:
         case NetworkState::WIFI_SETUP_REQUIRED:

@@ -219,8 +219,8 @@ void ReadyScreen::update_network_status() {
 #else
     switch (network_manager.state()) {
         case NetworkState::WIFI_DISABLED:
-            status = "WI-FI DISABLED";
-            detail = "Enable Wi-Fi in Settings.";
+            status = "WI-FI OFF";
+            detail = "Turn it on in Menu > Wi-Fi.";
             break;
         case NetworkState::WIFI_NO_CREDENTIALS:
         case NetworkState::WIFI_SETUP_REQUIRED:

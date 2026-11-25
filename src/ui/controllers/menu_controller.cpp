@@ -12,6 +12,7 @@
 #include "../../controllers/grind_controller.h"
 #include "../../controllers/grind_mode_traits.h"
 #include "../../logging/grind_logging.h"
+#include "../../network/network_manager.h"
 #include "../../system/diagnostics_controller.h"
 #include "../../system/screensaver_settings.h"
 #include "../../system/statistics_manager.h"
@@ -48,6 +49,7 @@ void MenuUIController::register_events() {
     EventBridgeLVGL::register_handler(ET::BLE_TOGGLE, [this](lv_event_t*) { handle_ble_toggle(); });
     EventBridgeLVGL::register_handler(ET::BLE_STARTUP_TOGGLE, [this](lv_event_t*) { handle_ble_startup_toggle(); });
     EventBridgeLVGL::register_handler(ET::LOGGING_TOGGLE, [this](lv_event_t*) { handle_logging_toggle(); });
+    EventBridgeLVGL::register_handler(ET::WIFI_TOGGLE, [this](lv_event_t*) { handle_wifi_toggle(); });
 
     EventBridgeLVGL::register_handler(ET::GRIND_MODE_SWIPE_TOGGLE, [this](lv_event_t*) { handle_grind_mode_swipe_toggle(); });
     EventBridgeLVGL::register_handler(ET::GRIND_MODE_RADIO_BUTTON, [this](lv_event_t*) { handle_grind_mode_radio_button(); });
@@ -331,6 +333,16 @@ void MenuUIController::handle_logging_toggle() {
     prefs.end();
 
     LOG_DEBUG_PRINTLN(logging_enabled ? "Logging enabled" : "Logging disabled");
+}
+
+void MenuUIController::handle_wifi_toggle() {
+    if (!ui_manager_) return;
+
+    auto* toggle = ui_manager_->menu_screen.get_network_toggle();
+    if (!toggle) return;
+
+    // The main loop owns Wi-Fi; it starts or stops it and saves the choice.
+    network_manager.request_enabled(lv_obj_has_state(toggle, LV_STATE_CHECKED));
 }
 
 void MenuUIController::handle_grind_mode_swipe_toggle() {
