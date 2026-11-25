@@ -33,7 +33,7 @@ motor off before the target, then uses controlled pulses to finish the dose.
 <tr>
 <td width="50%">
 
-https://github.com/user-attachments/assets/e20ce3e2-417e-4a3b-bb48-05591fce9418
+https://github.com/user-attachments/assets/b607e5ab-dcd3-4edc-b01e-67472be42d3c
 
 </td>
 <td width="50%">
