@@ -1,5 +1,6 @@
 #include "grind_controller.h"
 #include "grind_events.h"
+#include "grind_timeout_text.h"
 #include "../hardware/circular_buffer_math/circular_buffer_math.h"
 #include "../config/constants.h"
 #include "../system/diagnostics_controller.h"
@@ -22,6 +23,18 @@
 #define FLASH_OP_QUEUE_SIZE 5
 
 static constexpr float NO_WEIGHT_DELIVERED_THRESHOLD_G = 0.2f;
+// Span of the level read at the start of a grind for the vessel's weight, the
+// same as the low-latency weight read beside it.
+static constexpr uint32_t VESSEL_READING_WINDOW_MS = 100;
+
+#if GRIND_SHAKY_BENCH_DEFAULT
+#pragma message("Shaky-bench handling is on by default in this build")
+#endif
+
+// The average taken on an unsteady scale must not reach back before the wait it
+// ends: a correction pulse may have run just before that wait began.
+static_assert(GRIND_UNSTEADY_AVERAGE_WINDOW_MS <= GRIND_WEIGHT_SETTLE_LIMIT_MS,
+              "The unsteady average reaches back before its settle wait");
 
 void GrindController::init(WeightSensor* lc, Grinder* gr, Preferences* prefs) {
     const auto control_lock = lock_control();
@@ -47,6 +60,20 @@ void GrindController::init(WeightSensor* lc, Grinder* gr, Preferences* prefs) {
     last_mechanical_weight_ = 0.0f;
     mechanical_monitor_initialized_ = false;
     net_weight_removal_guard_.reset(0.0f);
+    guard_sample_ms_ = 0;
+    vessel_at_grind_zero_g_ = 0.0f;
+    grind_zero_offset_ = 0;
+    grind_zero_known_ = false;
+    vessel_tracker_.reset();
+    last_vessel_track_ms_ = 0;
+    vessel_track_cal_factor_ = 0.0f;
+    settle_wait_start_ms_ = 0;
+    settle_wait_reported_ = false;
+    shaky_bench_handling_ = false;
+    quiet_after_tare_ = false;
+    quiet_after_prime_ = false;
+    flow_baseline_weight_ = 0.0f;
+    flow_baseline_known_ = false;
 
     // Initialize grind freshness tracking
     grinder_purged_since_boot = false;
@@ -108,6 +135,17 @@ void GrindController::init(WeightSensor* lc, Grinder* gr, Preferences* prefs) {
 
     // Load coast ratio from preferences
     load_coast_ratio();
+
+    // The after-run time earlier grinds taught
+    load_learned_coast();
+
+#if GRIND_SHAKY_BENCH_DEFAULT
+    // A build made for a shaking bench stores that choice once, so that it
+    // outlives an update to a standard build and shows in the menu as chosen.
+    if (preferences && !preferences->isKey(PREF_KEY_SHAKY_BENCH)) {
+        save_shaky_bench(true);
+    }
+#endif
 }
 
 bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grind_mode) {
@@ -180,6 +218,7 @@ bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grin
     predictive_end_weight = 0;
     final_weight = 0;
     motor_stop_target_weight = GRIND_UNDERSHOOT_TARGET_G; // Start with a safe default
+    main_run_flow_gps_ = 0.0f;
 
     time_grind_start_ms = 0;
 
@@ -218,6 +257,10 @@ bool GrindController::start_grind(float target, uint32_t time_ms, GrindMode grin
 
     reset_mechanical_anomaly_count();
     net_weight_removal_guard_.reset(0.0f);
+    vessel_tracker_.interrupt();
+    shaky_bench_handling_ = shaky_bench_enabled();
+    quiet_after_tare_ = false;
+    quiet_after_prime_ = false;
 
     if (diagnostics_controller_) {
         diagnostics_controller_->reset_diagnostic(DiagnosticCode::MECHANICAL_INSTABILITY);
@@ -376,8 +419,11 @@ void GrindController::resume_grind() {
 
 void GrindController::update() {
     const auto control_lock = lock_control();
-    if (!is_active()) return;
-    
+    if (!is_active()) {
+        track_resting_scale(millis());
+        return;
+    }
+
     unsigned long now = millis();
     
     // Calculate all measurement values once at the start - pass to methods to avoid redundant calculations
@@ -400,8 +446,13 @@ void GrindController::update() {
         if (grinder) grinder->stop();
         final_weight = loop_data.current_weight;
         last_session_result_ = GrindSessionResult::SCALE_ERROR;
-        set_error_message("Scale disconnected");
-        queue_log_message("[SCALE] Weight grind stopped: no valid sample for 500ms\n");
+        // Rail readings mean the HX711 answers but the load cell signal is
+        // broken (wiring, excitation, overload), which is a different fix.
+        const bool out_of_range = weight_sensor && weight_sensor->is_signal_out_of_range();
+        set_error_message(out_of_range ? "Load cell out of range" : "Scale disconnected");
+        queue_log_message(out_of_range
+            ? "[SCALE] Weight grind stopped: load cell signal pinned at ADC rail for 500ms\n"
+            : "[SCALE] Weight grind stopped: no valid sample for 500ms\n");
         switch_phase(GrindPhase::TIMEOUT, loop_data);
         return;
     }
@@ -439,15 +490,32 @@ void GrindController::update() {
             // zero. Time and manual grinds keep the starting weight.
             const bool usable_scale = weight_sensor && weight_sensor->has_recent_sample() &&
                                       !weight_sensor->has_hardware_fault();
-            const float vessel_weight = usable_scale ? pre_tare_weight : 0.0f;
+            const float starting_weight = usable_scale ? pre_tare_weight : 0.0f;
+            // The reading is the vessel's weight only on a scale last zeroed
+            // empty. A weight grind zeroes it with the vessel on, so the next
+            // grind reads about zero. What stood on the scale at that zero is
+            // then still there, unless something has zeroed the scale since.
+            const bool on_grind_zero = usable_scale && grind_zero_known_ &&
+                                       !weight_sensor->is_tare_in_progress() &&
+                                       weight_sensor->get_zero_offset() == grind_zero_offset_;
+            const float carried_weight = on_grind_zero ? vessel_at_grind_zero_g_ : 0.0f;
+            const float weight_over_empty_scale = usable_scale
+                ? vessel_tracker_.vessel_weight_g(weight_sensor->get_untared_level(VESSEL_READING_WINDOW_MS))
+                : 0.0f;
+            const float vessel_weight = vessel_weight_estimate(starting_weight, carried_weight,
+                                                               weight_over_empty_scale);
             net_weight_removal_guard_.reset(vessel_weight,
-                                            mode == GrindMode::WEIGHT ? 0.0f : vessel_weight);
+                                            mode == GrindMode::WEIGHT ? 0.0f : starting_weight);
             if (net_weight_removal_guard_.has_reference()) {
-                queue_log_message("[SCALE] Vessel reference: %.2fg; removal threshold: %.2fg\n",
+                queue_log_message("[SCALE] Vessel reference: %.2fg (reads %.2fg, carried %.2fg, tracked %.2fg); removal threshold: %.2fg\n",
                                   net_weight_removal_guard_.reference_weight_g(),
+                                  starting_weight, carried_weight, weight_over_empty_scale,
                                   net_weight_removal_guard_.removal_threshold_g());
             } else {
                 queue_log_message("[SCALE] No vessel reference; removal guard disabled for this grind\n");
+            }
+            if (shaky_bench_handling_) {
+                queue_log_message("[SCALE] Shaky-bench handling is on\n");
             }
             if (mode == GrindMode::MANUAL) {
                 if (!grinder->is_grinding()) grinder->start();
@@ -476,8 +544,33 @@ void GrindController::update() {
         case GrindPhase::TARE_CONFIRM:
             // Check if tare is complete
             if (!weight_sensor->is_tare_in_progress()) {
-                // Double confirm weights are settled
-                if (weight_sensor->is_settled()) {
+                // Double confirm weights are settled. With shaky-bench
+                // handling a bench that never reads still does not hold the
+                // grind here.
+                const SettleWait wait = wait_for_still_scale(GRIND_SCALE_PRECISION_SETTLING_TIME_MS,
+                                                             GRIND_TARE_SETTLE_LIMIT_MS, stillness_wait_past_limit(),
+                                                             loop_data);
+                if (wait != SettleWait::WAITING) {
+                    quiet_after_tare_ = weight_sensor->is_settled(GRIND_QUIET_BENCH_WINDOW_MS);
+                    // The tare took the zero from a quarter second of readings.
+                    // If the scale never read still since, those were shaken:
+                    // the average of two seconds is the better zero. It may
+                    // only move the zero by what vibration accounts for, so a
+                    // hand on the vessel cannot be zeroed in.
+                    float average_on_tare_zero = 0.0f;
+                    if (shaky_bench_handling_ && wait == SettleWait::UNSTEADY &&
+                        weight_sensor->get_shaken_weight(GRIND_UNSTEADY_AVERAGE_WINDOW_MS, &average_on_tare_zero) &&
+                        fabsf(average_on_tare_zero) <= GRIND_UNSTEADY_ZERO_SHIFT_LIMIT_G) {
+                        weight_sensor->set_zero_offset(
+                            weight_sensor->get_raw_adc_smoothed(GRIND_UNSTEADY_AVERAGE_WINDOW_MS));
+                        queue_log_message("[SCALE] Zero moved by %.2fg to the %.1fs average\n", average_on_tare_zero,
+                                          GRIND_UNSTEADY_AVERAGE_WINDOW_MS / 1000.0f);
+                    }
+                    // The vessel stands on this zero until the scale is zeroed again.
+                    grind_zero_offset_ = weight_sensor->get_zero_offset();
+                    vessel_at_grind_zero_g_ = net_weight_removal_guard_.reference_weight_g();
+                    grind_zero_known_ = true;
+
                     if (!grinder->is_grinding()) {
                         grinder->start();  // Ensure motor is running
                     }
@@ -515,31 +608,27 @@ void GrindController::update() {
                 break;
             }
 
-            bool settled = weight_sensor->check_settling_complete(GRIND_SCALE_PRECISION_SETTLING_TIME_MS);
-            bool settling_timed_out = (loop_data.now - phase_start_time) >= GRIND_SCALE_SETTLING_TIMEOUT_MS;
-            if (settled || settling_timed_out) {
-                if (settling_timed_out && !settled) {
-                    queue_log_message("[GRINDER] Settling timeout, resuming grind\n");
-                }
+            // This phase ends with the motor starting again or with the purge
+            // prompt. While the scale says the vessel is gone, neither is
+            // decided here: the removal guard below rules on it first.
+            if (net_weight_removal_guard_.has_reference() &&
+                weight_sensor->get_instant_weight() <= net_weight_removal_guard_.removal_threshold_g()) {
+                break;
+            }
+
+            // The grind has always gone on after a while here; with
+            // shaky-bench handling it does so sooner.
+            const uint32_t limit_ms = shaky_bench_handling_ ? GRIND_PRIME_SETTLE_LIMIT_MS
+                                                            : GRIND_SCALE_SETTLING_TIMEOUT_MS;
+            const SettleWait wait = wait_for_still_scale(GRIND_SCALE_PRECISION_SETTLING_TIME_MS, limit_ms,
+                                                         PastLimit::CARRY_ON, loop_data);
+            if (wait != SettleWait::WAITING) {
+                quiet_after_prime_ = wait == SettleWait::STILL &&
+                                     loop_data.now - settle_wait_start_ms_ <= GRIND_QUIET_BENCH_SETTLE_MS;
                 flow_start_confirmed = false;
                 grind_latency_ms = 0;
 
-                // Check if grounds are stale and purge confirmation should be shown
-                bool should_show_purge_popup = false;
-                if (!grinder_purged_since_boot) {
-                    // First grind since boot - grounds are stale
-                    should_show_purge_popup = true;
-                } else {
-                    // Check if enough time has elapsed since last grind
-                    uint64_t current_ms = esp_timer_get_time() / 1000;
-                    uint64_t elapsed_ms = current_ms - last_purge_runtime_ms;
-                    float freshness_hours = preferences ? preferences->getFloat(PREF_KEY_GRIND_FRESHNESS_HOURS, GRIND_FRESHNESS_DEFAULT_HOURS) : GRIND_FRESHNESS_DEFAULT_HOURS;
-                    uint64_t threshold_ms = (uint64_t)(freshness_hours * 3600000.0f);
-                    should_show_purge_popup = (elapsed_ms > threshold_ms);
-                }
-
-                // Determine next phase based on mode AND staleness
-                if (grinder_purge_mode_for_session == GrinderPurgeMode::PURGE && should_show_purge_popup) {
+                if (purge_prompt_due()) {
                     // Purge mode with stale grounds: wait for user confirmation before continuing
                     timeout_pause_start = loop_data.now;  // Track when pause started for timeout offset
                     switch_phase(GrindPhase::PURGE_CONFIRM, loop_data);
@@ -595,14 +684,21 @@ void GrindController::update() {
             }
             break;
 
-        case GrindPhase::FINAL_SETTLING:
-            // Wait for weight to settle with precision settling window
-            if (!weight_sensor ||
-                weight_sensor->check_settling_complete(GRIND_SCALE_PRECISION_SETTLING_TIME_MS)) {
-                final_measurement(loop_data);
+        case GrindPhase::FINAL_SETTLING: {
+            // Wait for weight to settle with precision settling window. On a
+            // bench that never reads still the average is the result.
+            float unsteady_average = 0.0f;
+            const SettleWait wait = wait_for_still_scale(GRIND_SCALE_PRECISION_SETTLING_TIME_MS,
+                                                         GRIND_WEIGHT_SETTLE_LIMIT_MS, weight_wait_past_limit(),
+                                                         loop_data, &unsteady_average);
+            if (wait == SettleWait::STILL) {
+                final_measurement(loop_data, weight_sensor ? weight_sensor->get_weight_high_latency() : 0.0f);
+            } else if (wait == SettleWait::UNSTEADY) {
+                final_measurement(loop_data, unsteady_average);
             }
             break;
-            
+        }
+
         case GrindPhase::TIME_ADDITIONAL_PULSE:
             // Check for additional pulse completion
             if (grinder && grinder->is_pulse_complete()) {
@@ -617,6 +713,8 @@ void GrindController::update() {
         case GrindPhase::COMPLETED:
         case GrindPhase::TIMEOUT:
             queue_terminal_session();
+            // The result is on screen; this is when the vessel is lifted off.
+            track_resting_scale(now);
             break;
 
             
@@ -659,13 +757,23 @@ void GrindController::update() {
     }
     const bool net_weight_guard_active = guarded_phase && grinder->is_motor_settled();
     bool vessel_removed = false;
-    if (net_weight_guard_active) {
-        vessel_removed = net_weight_removal_guard_.update(loop_data.current_weight);
-    } else {
+    if (!net_weight_guard_active) {
         net_weight_removal_guard_.cancel_pending();
+    } else if (weight_sensor && weight_sensor->get_last_sample_ms() != guard_sample_ms_) {
+        // This loop runs several times per scale conversion, and the control
+        // weight averages the newest two. Each conversion is judged once and
+        // on its own, so a bad one cannot count as several.
+        guard_sample_ms_ = weight_sensor->get_last_sample_ms();
+        vessel_removed = net_weight_removal_guard_.update(weight_sensor->get_instant_weight());
     }
 
-    if (vessel_removed) {
+    if (vessel_removed && phase == GrindPhase::PRIME_SETTLING && purge_prompt_due()) {
+        // Lifted off to be emptied before the prompt was up. The motor is
+        // off and stays off: show the prompt instead of calling it a removal.
+        net_weight_removal_guard_.cancel_pending();
+        timeout_pause_start = loop_data.now;
+        switch_phase(GrindPhase::PURGE_CONFIRM, loop_data);
+    } else if (vessel_removed) {
         timeout_phase = phase;
         grinder->stop();
         queue_manual_runtime(loop_data.now);
@@ -686,20 +794,10 @@ void GrindController::update() {
         queue_manual_runtime(loop_data.now);
         last_session_result_ = GrindSessionResult::TIMEOUT;
         
+        // The phase goes to the log; the screen says what it means.
         queue_log_message("--- GRIND TIMEOUT in phase %s ---\n", get_phase_name(timeout_phase));
-        char timeout_msg[32];
-        const char* phase_name = get_phase_name(timeout_phase);
-        if (mode == GrindMode::MANUAL) {
-            snprintf(timeout_msg, sizeof(timeout_msg), "30s safety limit");
-        } else if (phase_name && phase_name[0]) {
-            char phase_short[5];
-            strncpy(phase_short, phase_name, sizeof(phase_short) - 1);
-            phase_short[sizeof(phase_short) - 1] = '\0';
-            snprintf(timeout_msg, sizeof(timeout_msg), "Timeout:%s", phase_short);
-        } else {
-            snprintf(timeout_msg, sizeof(timeout_msg), "Timeout");
-        }
-        set_error_message(timeout_msg);
+        const GrindTimeoutText timeout_text = grind_timeout_text(mode, timeout_phase);
+        set_error_message(timeout_text.message, timeout_text.title);
         switch_phase(GrindPhase::TIMEOUT, loop_data);
     }
 }
@@ -739,8 +837,84 @@ void GrindController::monitor_mechanical_instability(const GrindLoopData& loop_d
     last_mechanical_weight_ = loop_data.current_weight;
 }
 
-void GrindController::final_measurement(const GrindLoopData& loop_data) {
-    final_weight = weight_sensor ? weight_sensor->get_weight_high_latency() : 0.0f;
+SettleWait GrindController::wait_for_still_scale(uint32_t still_window_ms, uint32_t limit_ms, PastLimit past_limit,
+                                                 const GrindLoopData& loop_data, float* weight_out,
+                                                 float least_average_g) {
+    float weight = 0.0f;
+    SettleWait wait = SettleWait::STILL;  // Without a scale there is nothing to wait for
+    if (weight_sensor) {
+        const bool scale_still = weight_sensor->check_settling_complete(still_window_ms, &weight);
+        wait = settle_wait(scale_still, loop_data.now - settle_wait_start_ms_, limit_ms);
+    }
+
+    if (wait == SettleWait::UNSTEADY && past_limit != PastLimit::CARRY_ON) {
+        // A weight is about to be acted on. An average stands in for a still
+        // reading only where the caller allows one, while the readings look
+        // like one weight being shaken, and if that weight has not dropped.
+        // Otherwise the wait goes on, as it always did.
+        const bool usable = past_limit == PastLimit::USE_AVERAGE &&
+                            weight_sensor->get_shaken_weight(GRIND_UNSTEADY_AVERAGE_WINDOW_MS, &weight) &&
+                            weight >= least_average_g;
+        if (!usable) {
+            if (!settle_wait_reported_) {
+                settle_wait_reported_ = true;
+                queue_log_message("[SCALE] Not still within %lums in %s; %s\n",
+                                  static_cast<unsigned long>(limit_ms), get_phase_name(),
+                                  past_limit == PastLimit::USE_AVERAGE ? "no steady average to use, waiting"
+                                                                       : "waiting for a still reading");
+            }
+            return SettleWait::WAITING;
+        }
+        queue_log_message("[SCALE] Not still within %lums in %s; using the %.1fs average %.2fg\n",
+                          static_cast<unsigned long>(limit_ms), get_phase_name(),
+                          GRIND_UNSTEADY_AVERAGE_WINDOW_MS / 1000.0f, weight);
+    } else if (wait == SettleWait::UNSTEADY) {
+        queue_log_message("[SCALE] Not still within %lums in %s; carrying on\n",
+                          static_cast<unsigned long>(limit_ms), get_phase_name());
+    }
+
+    if (weight_out) {
+        *weight_out = weight;
+    }
+    return wait;
+}
+
+bool GrindController::purge_prompt_due() const {
+    if (grinder_purge_mode_for_session != GrinderPurgeMode::PURGE) {
+        return false;
+    }
+    if (!grinder_purged_since_boot) {
+        // First grind since boot - grounds are stale
+        return true;
+    }
+    // Check if enough time has elapsed since last grind
+    uint64_t current_ms = esp_timer_get_time() / 1000;
+    uint64_t elapsed_ms = current_ms - last_purge_runtime_ms;
+    float freshness_hours = preferences ? preferences->getFloat(PREF_KEY_GRIND_FRESHNESS_HOURS, GRIND_FRESHNESS_DEFAULT_HOURS) : GRIND_FRESHNESS_DEFAULT_HOURS;
+    uint64_t threshold_ms = (uint64_t)(freshness_hours * 3600000.0f);
+    return elapsed_ms > threshold_ms;
+}
+
+void GrindController::track_resting_scale(unsigned long now) {
+    if (now - last_vessel_track_ms_ < VesselWeightTracker::kObserveIntervalMs) return;
+    last_vessel_track_ms_ = now;
+
+    if (!weight_sensor || weight_sensor->has_hardware_fault() || !weight_sensor->has_recent_sample()) {
+        vessel_tracker_.interrupt();
+        return;
+    }
+
+    // A new calibration rescales every level, so the empty level is learnt again.
+    const float cal_factor = weight_sensor->get_calibration_factor();
+    if (cal_factor != vessel_track_cal_factor_) {
+        vessel_track_cal_factor_ = cal_factor;
+        vessel_tracker_.reset();
+    }
+    vessel_tracker_.observe(weight_sensor->get_untared_level(VesselWeightTracker::kAverageWindowMs), now);
+}
+
+void GrindController::final_measurement(const GrindLoopData& loop_data, float measured_weight) {
+    final_weight = measured_weight;
 
     if (mode == GrindMode::WEIGHT && target_weight >= 1.0f && final_weight < NO_WEIGHT_DELIVERED_THRESHOLD_G) {
         timeout_phase = GrindPhase::FINAL_SETTLING;
@@ -808,6 +982,13 @@ void GrindController::switch_phase(GrindPhase new_phase, const GrindLoopData& lo
     }
     
     // Update phase state
+    if (!continues_settle_wait(phase, new_phase)) {
+        settle_wait_start_ms_ = now;
+        settle_wait_reported_ = false;
+    }
+    if (new_phase == GrindPhase::PREDICTIVE) {
+        flow_baseline_known_ = false;
+    }
     phase = new_phase;
     control_loop_paused_ = (phase == GrindPhase::PURGE_CONFIRM);
     phase_start_time = now;
@@ -1079,6 +1260,7 @@ void GrindController::process_queued_ui_events() {
 
 bool GrindController::queue_terminal_session() {
     if (phase != GrindPhase::COMPLETED && phase != GrindPhase::TIMEOUT) return false;
+    queue_learned_coast_save();
     if (session_end_flash_queued || !grind_logger.is_logging_active()) return true;
 
     FlashOpRequest request = {};
@@ -1108,9 +1290,11 @@ bool GrindController::queue_flash_operation(const FlashOpRequest& request) {
         } else {
             const char* op_name = request.operation_type == FlashOpRequest::END_GRIND_SESSION
                                       ? "END_GRIND_SESSION"
-                                      : request.operation_type == FlashOpRequest::UPDATE_MANUAL_RUNTIME
-                                            ? "UPDATE_MANUAL_RUNTIME"
-                                            : "START_GRIND_SESSION";
+                                  : request.operation_type == FlashOpRequest::UPDATE_MANUAL_RUNTIME
+                                      ? "UPDATE_MANUAL_RUNTIME"
+                                  : request.operation_type == FlashOpRequest::SAVE_LEARNED_COAST
+                                      ? "SAVE_LEARNED_COAST"
+                                      : "START_GRIND_SESSION";
             LOG_BLE("[%lums FLASH_OP] QUEUED %s operation for Core 1 processing\n", millis(), op_name);
             return true;
         }
@@ -1148,7 +1332,15 @@ void GrindController::process_queued_flash_operations() {
                 LOG_BLE("[%lums FLASH_OP] Recorded manual motor runtime: %lums\n",
                         millis(), static_cast<unsigned long>(request.motor_runtime_ms));
                 break;
-                
+
+            case FlashOpRequest::SAVE_LEARNED_COAST:
+                if (preferences) {
+                    preferences->putFloat(PREF_KEY_COAST_LEARNT_MS, request.learned_coast_ms);
+                    preferences->putInt(PREF_KEY_COAST_LEARNT_GRINDS,
+                                        static_cast<int>(std::min<uint32_t>(request.learned_coast_grinds, INT32_MAX)));
+                }
+                break;
+
             default:
                 LOG_BLE("WARNING: Unknown flash operation type %d\n", request.operation_type);
                 break;
@@ -1201,6 +1393,51 @@ void GrindController::set_error_message(const char* message, const char* title) 
     }
     strncpy(last_error_message, message, sizeof(last_error_message) - 1);
     last_error_message[sizeof(last_error_message) - 1] = '\0';
+}
+
+void GrindController::load_learned_coast() {
+    const auto control_lock = lock_control();
+    if (!preferences) {
+        coast_learner_.reset();
+        return;
+    }
+    const int grinds = preferences->getInt(PREF_KEY_COAST_LEARNT_GRINDS, 0);
+    coast_learner_.restore(preferences->getFloat(PREF_KEY_COAST_LEARNT_MS, 0.0f),
+                           grinds > 0 ? static_cast<uint32_t>(grinds) : 0U);
+    if (coast_learner_.known()) {
+        LOG_BLE("Coast: learnt %.0f ms over %lu grinds\n", coast_learner_.coast_ms(),
+                static_cast<unsigned long>(coast_learner_.grinds()));
+    } else {
+        LOG_BLE("Coast: nothing learnt yet; the first grind estimates it\n");
+    }
+}
+
+// Called with the first settled weight after the main run: everything that
+// landed since the motor stopped is in. The main run's own flow turns that
+// into time. It is stored once the grind has its result (queue_terminal_session),
+// not while corrections run: a flash write pauses both processor cores.
+void GrindController::learn_coast_from_main_run(float settled_weight) {
+    const float landed_g = settled_weight - predictive_end_weight;
+    float observed_ms = 0.0f;
+    if (!coast_ms_from_landing(landed_g, main_run_flow_gps_, &observed_ms)) {
+        queue_log_message("[COAST] %.2fg landed after the stop at %.2fg/s: not learnt\n", landed_g,
+                          main_run_flow_gps_);
+        return;
+    }
+    coast_learner_.learn(observed_ms);
+    queue_log_message("[COAST] %.2fg landed after the stop at %.2fg/s = %.0fms; learnt %.0fms over %lu grinds\n",
+                      landed_g, main_run_flow_gps_, observed_ms, coast_learner_.coast_ms(),
+                      static_cast<unsigned long>(coast_learner_.grinds()));
+    coast_save_pending_ = true;
+}
+
+void GrindController::queue_learned_coast_save() {
+    if (!coast_save_pending_) return;
+    FlashOpRequest request = {};
+    request.operation_type = FlashOpRequest::SAVE_LEARNED_COAST;
+    request.learned_coast_ms = coast_learner_.coast_ms();
+    request.learned_coast_grinds = coast_learner_.grinds();
+    if (queue_flash_operation(request)) coast_save_pending_ = false;
 }
 
 // Manual grinds are not logged as sessions, but their motor time still
@@ -1383,4 +1620,28 @@ void GrindController::set_coast_ratio(float value) {
 
     coast_ratio_ = value;
     LOG_BLE("Coast ratio: Set to %.2f (not saved to NVS)\n", value);
+}
+
+//==============================================================================
+// SHAKY-BENCH HANDLING (Menu → Grind Settings → Shaky Bench)
+//==============================================================================
+// The stored choice is read as each grind starts, so a change made in the menu
+// applies from the next grind.
+
+bool GrindController::shaky_bench_enabled() const {
+    return (preferences ? preferences->getInt(PREF_KEY_SHAKY_BENCH, GRIND_SHAKY_BENCH_DEFAULT)
+                        : GRIND_SHAKY_BENCH_DEFAULT) != 0;
+}
+
+bool GrindController::save_shaky_bench(bool enabled) {
+    if (!preferences) {
+        LOG_BLE("ERROR: Cannot save the shaky-bench setting - no preferences available\n");
+        return false;
+    }
+    if (preferences->putInt(PREF_KEY_SHAKY_BENCH, enabled ? 1 : 0) != sizeof(int32_t)) {
+        LOG_BLE("ERROR: Failed to save the shaky-bench setting to NVS\n");
+        return false;
+    }
+    LOG_BLE("Shaky-bench handling: saved %s\n", enabled ? "on" : "off");
+    return true;
 }

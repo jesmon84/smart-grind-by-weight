@@ -41,6 +41,8 @@ bool is_valid_idle_timeout(uint16_t v){return v>=30 && v<=3600;}
 bool is_valid_startup_timeout(uint8_t v){return v>=1 && v<=30;}
 bool is_valid_display_off_delay(uint16_t v){return v>=30 && v<=43200;}
 ScreensaverTimingSettings load_timing(){return {300,3,false,3600};}
+uint32_t revision=0;
+uint32_t timing_revision(){return revision;}
 ''' + method(timing, "bool load_timing_checked(") + r'''
 }
 struct DisplayManager {};
@@ -48,18 +50,21 @@ struct Hardware {DisplayManager display;DisplayManager* get_display(){return &di
 struct UIManager {
  Hardware* hardware_manager;
  struct {bool auto_start_enabled=false,auto_return_enabled=false;float auto_start_threshold_g=50;uint32_t last_auto_start_ms=0,last_auto_return_ms=0;} auto_actions_;
+ struct {int resets=0;void reset(){++resets;}} auto_start_tracker_;
  bool refresh_auto_action_settings(bool);
 };
 ''' + method(ui, "bool UIManager::refresh_auto_action_settings(") + r'''
 struct ScreenTimeoutController {
  UIManager* ui_manager_;
  ScreensaverTimingSettings timing_settings_{300,3,false,3600};
- uint32_t settings_applied_at_ms_=0,last_weight_activity_ms_=0,last_settings_refresh_ms_=0;
+ uint32_t settings_applied_at_ms_=0,last_weight_activity_ms_=0,loaded_timing_revision_=0;
  int restores=0;
  void restore_normal_display(DisplayManager*){++restores;}
  bool apply_runtime_settings(bool);
+ void reload_settings_if_saved();
 };
-''' + method(display, "bool ScreenTimeoutController::apply_runtime_settings(") + r'''
+''' + method(display, "bool ScreenTimeoutController::apply_runtime_settings(") + "\n" \
+  + method(display, "void ScreenTimeoutController::reload_settings_if_saved(") + r'''
 int main(){
  Hardware hardware;UIManager ui{&hardware};ScreenTimeoutController screen{&ui};
  Preferences::open=false;
@@ -79,6 +84,24 @@ int main(){
  assert(ui.refresh_auto_action_settings(true));assert(screen.apply_runtime_settings(true));
  assert(ui.auto_actions_.auto_start_enabled && ui.auto_actions_.auto_start_threshold_g==75);
  assert(screen.timing_settings_.idle_timeout_s==120 && screen.restores==1);
+
+ // Settings saved by another task (Bluetooth) are picked up from the revision
+ // counter, without a timer: nothing is read until a save, a save is read
+ // once, and values that cannot be read back keep the ones in use.
+ ScreenTimeoutController watcher{&ui};
+ watcher.reload_settings_if_saved();
+ assert(watcher.timing_settings_.idle_timeout_s==300);
+ ScreensaverSettings::revision=1;
+ watcher.reload_settings_if_saved();
+ assert(watcher.timing_settings_.idle_timeout_s==120 && watcher.loaded_timing_revision_==1);
+ assert(watcher.restores==0);
+ watcher.timing_settings_.idle_timeout_s=600;
+ watcher.reload_settings_if_saved();
+ assert(watcher.timing_settings_.idle_timeout_s==600);
+ Preferences::bad="idle_timeout_s";ScreensaverSettings::revision=2;
+ watcher.reload_settings_if_saved();
+ assert(watcher.timing_settings_.idle_timeout_s==600 && watcher.loaded_timing_revision_==2);
+ Preferences::bad="";
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:

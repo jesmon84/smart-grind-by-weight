@@ -30,6 +30,11 @@ void ReadyUIController::update() {
         last_network_update_ms_ = now;
         ui_manager_->ready_screen.update_network_status();
     }
+
+    // Stored here, after the swipe, so no flash write lands in the animation.
+    if (profile_settle_.settled(now) && ui_manager_->profile_controller) {
+        ui_manager_->profile_controller->save_selected_profile();
+    }
 }
 
 void ReadyUIController::handle_manual_tare() {
@@ -62,7 +67,8 @@ void ReadyUIController::refresh_scale_readiness() {
     }
 
     const ScaleReadiness previous = scale_readiness_;
-    scale_readiness_ = scale_tracker_.update(signals, millis(), SYS_SCALE_STARTUP_TIMEOUT_MS);
+    scale_readiness_ = scale_tracker_.update(signals, millis(), SYS_SCALE_STARTUP_TIMEOUT_MS,
+                                             SYS_SCALE_STARTUP_HOLD_MS);
     if (scale_readiness_ != previous) {
         LOG_BLE("[SCALE] Ready screen status: %s\n",
                 scale_readiness_ == ScaleReadiness::READY      ? "ready" :
@@ -131,14 +137,26 @@ void ReadyUIController::handle_tab_change(int tab) {
     }
 
     ui_manager_->current_tab = tab;
-    if (tab == ReadyScreen::MANUAL_TAB_INDEX) {
-        ui_manager_->current_mode = GrindMode::MANUAL;
-        ui_manager_->grinding_screen.set_mode(ui_manager_->current_mode);
-    } else if (ui_manager_->profile_controller && ReadyScreen::is_profile_tab(tab)) {
-        ui_manager_->profile_controller->set_current_profile(ReadyScreen::profile_index_for_tab(tab));
-        ui_manager_->current_mode = ui_manager_->profile_controller->get_grind_mode();
+    ProfileController* profiles = ui_manager_->profile_controller;
+    if (profiles && ReadyScreen::is_profile_tab(tab)) {
+        // In view but not stored yet: swiping to the menu passes over the
+        // profiles in between. update() stores it once it has stayed in view.
+        profiles->select_profile(ReadyScreen::profile_index_for_tab(tab));
+        profile_settle_.profile_shown(millis());
+        ui_manager_->current_mode = profiles->get_grind_mode();
         ui_manager_->grinding_screen.set_mode(ui_manager_->current_mode);
         refresh_profiles();
+    } else {
+        // Left the profile pages before the last one settled, so the profile
+        // in use goes back to the stored one.
+        if (profiles && profile_settle_.pending()) {
+            profiles->restore_saved_profile();
+        }
+        profile_settle_.cancel();
+        if (tab == ReadyScreen::MANUAL_TAB_INDEX) {
+            ui_manager_->current_mode = GrindMode::MANUAL;
+            ui_manager_->grinding_screen.set_mode(ui_manager_->current_mode);
+        }
     }
 
     if (ui_manager_->grinding_controller_) {

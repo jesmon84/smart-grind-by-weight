@@ -18,8 +18,20 @@ The system uses a **zero-shot learning algorithm** requiring no prior knowledge 
 
 1. **Initialization & Taring Phase**
    - Automatic tare on grind button press
-   - 30-second timeout from grind start to completion
-   - Noise-adaptive settling detection
+   - 60-second limit from grind start to completion (30 seconds for a manual grind)
+   - Noise-adaptive settling detection: the grind waits for a still reading
+     after taring, after the motor stops, before each correction and before
+     the final weight
+   - Optional shaky-bench handling for a grinder on a vibrating bench (a
+     build option, off by default; see
+     [Troubleshooting](TROUBLESHOOTING.md#shaky-bench-handling)). The waits
+     after taring, after the prime and after the motor stops then end after
+     a few seconds. A grind that finds its bench shaking (the scale came to
+     rest neither after taring nor after the prime) uses the average of the
+     last two seconds of readings for a correction or the final weight,
+     while those readings look like one weight being shaken (little scatter,
+     no drift). With a hand on the portafilter or with grounds still falling,
+     the wait for a still reading goes on
 
 2. **Grinder Saturation Phase** (Weight mode only)
    - Saturates the grinder before main grind for accurate latency detection
@@ -29,8 +41,16 @@ The system uses a **zero-shot learning algorithm** requiring no prior knowledge 
    - Logging and chart updates disabled during purge confirmation
 
 3. **Predictive Phase**
-   - Learns flow rate and motor-to-cup latency (relay + motor inertia + burr spin-up)
-   - Predicts when to stop motor based on measured flow and coast characteristics
+   - Measures this grind's flow rate and motor-to-cup latency (relay + motor inertia + burr spin-up)
+   - Stops the motor early by what will still land afterwards: the after-run
+     time learnt from earlier grinds (`src/controllers/coast_learning.h`)
+     times this grind's flow, plus a 0.15 g margin, so the main run ends just
+     under the target and one small correction finishes it. Each grind
+     teaches the time again from what really landed after its stop; new
+     beans that flow faster or slower move the stop at once, because the
+     flow is measured live
+   - Before any grind has taught the time, the latency times the coast ratio
+     stands in for it
    - Target: barely undershoot target weight (overshoot is unrecoverable)
    - Uses runtime-configurable motor response latency (30-200ms, default 50ms)
 
@@ -40,6 +60,9 @@ The system uses a **zero-shot learning algorithm** requiring no prior knowledge 
    - Pulses range from motor latency minimum to latency + 225ms maximum
    - Mechanical instability detection (3+ sudden weight drops triggers diagnostic)
    - Repeats until target ± tolerance reached
+   - With shaky-bench handling, no pulse is decided on an averaged weight
+     that lies below what the grind has already weighed: coffee only ever
+     adds weight
 
 5. **Time Mode Additional Pulses**
    - Dedicated `TIME_ADDITIONAL_PULSE` phase for post-completion grinding
@@ -60,7 +83,7 @@ The latency value is automatically calibrated via **Auto-Tune Motor Response** (
 - Hardware-adaptive pulse control via runtime motor latency
 - Conservative approach: undershoots target, then corrects with bounded pulses
 - Mechanical instability detection with hysteresis and persistence
-- 30-second grind timeout protection with user acknowledgment requirement
+- 60-second grind timeout protection with user acknowledgment requirement
 
 ---
 

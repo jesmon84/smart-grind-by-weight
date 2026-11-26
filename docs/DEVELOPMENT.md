@@ -90,6 +90,25 @@ hardware-validation boundary.
 
 ---
 
+## 🧪 Desktop Tests
+
+The firmware's logic tests need a C++17 compiler and Python 3, no hardware.
+Run them from the repository root:
+
+```bash
+python3 -m unittest discover -s tools/tests -p '*_test.py'
+```
+
+One of them, `grind_bench_test.py`, runs the unmodified grind controller, both
+grind strategies and the scale filter against a simulated grinder and load
+cell. It grinds whole doses on a quiet bench, on an ordinary one and with scale
+readings recorded next to a running 3D printer, and covers a lifted
+portafilter, an overshoot and a timeout. Add a scenario to
+`tools/tests/grind_bench/bench.cpp` when you change grind control. Set
+`GRIND_BENCH_VERBOSE=1` to print every grind phase by phase.
+
+---
+
 ## 🔧 Firmware Build Targets
 
 The project has four build targets:
@@ -98,7 +117,7 @@ The project has four build targets:
 - **Use case:** Real V1 hardware with load cell and grinder connected
 - **Hardware:** Full ESP32-S3 + HX711 + load cell + grinder motor relay
 - **Features:** All functionality enabled
-- **Optimizations:** `-Ofast` optimization level for performance
+- **Optimizations:** the platform's own `-Os` is what takes effect: it comes after the project's `-O2` on the compiler command line, and the last `-O` option wins (`pio run -t envdump` shows the order in `CCFLAGS`). Never rely on `-Ofast` here: wherever it did take effect, fast-math would compile out the NaN/Inf validation checks
 
 ### V2 Production Target: `waveshare-esp32s3-touch-amoled-164-v2`
 - **Use case:** Waveshare 1.64-inch V2 hardware with load cell and grinder connected

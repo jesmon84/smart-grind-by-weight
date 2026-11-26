@@ -10,7 +10,8 @@
 class GrindingScreen : public IGrindingScreen {
 private:
     IGrindingScreen* active_screen;
-    GrindScreenLayout current_layout;
+    GrindScreenLayout current_layout;  // The layout on screen
+    GrindScreenLayout saved_layout;    // The Grind Settings choice every grind starts with
     GrindingScreenArc arc_screen;
     GrindingScreenChart chart_screen;
     GrindingScreenCircle circle_screen;
@@ -18,14 +19,20 @@ private:
     GrindMode current_mode;
 
     IGrindingScreen* screen_for_layout(GrindScreenLayout layout);
+    void show_layout(GrindScreenLayout layout);
 
 public:
     GrindingScreen();
     void init(Preferences* prefs);
+    // Chooses and stores the layout every grind starts with (Grind Settings).
     void set_layout(GrindScreenLayout layout);
-    // Arc -> Chart -> Circle -> Arc, as when tapping the screen while grinding
+    // Arc -> Chart -> Circle -> Arc, as when tapping the screen while
+    // grinding. Changes the view only; the stored choice is kept.
     void cycle_layout();
+    // Goes back to the stored choice after a tap switched the view.
+    void restore_saved_layout();
     GrindScreenLayout get_layout() const { return current_layout; }
+    GrindScreenLayout get_saved_layout() const { return saved_layout; }
     // True while the circle layout fills the display with its result colour.
     bool shows_result_colors() const {
         return current_layout == GrindScreenLayout::CIRCLE && circle_screen.shows_result_colors();

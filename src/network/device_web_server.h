@@ -35,6 +35,11 @@ public:
     bool is_ota_preparing() const {
         return ota_preparation_state_.load() == OtaPreparationState::REQUESTED;
     }
+    // True from the request to prepare an update until the grinder restarts
+    // into the new firmware or the update is called off.
+    bool is_ota_in_progress() const {
+        return ota_preparation_state_.load() != OtaPreparationState::IDLE || is_ota_active();
+    }
     uint8_t ota_progress_percent() const;
     bool ota_failed() const { return ota_failed_.load(); }
     FirmwareUpdateState firmware_update_state() const { return firmware_update_state_.load(); }

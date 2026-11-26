@@ -54,6 +54,13 @@
 // Legacy task scheduler intervals (deprecated - kept for compatibility)
 #define SYS_TASK_LOADCELL_INTERVAL_MS 20                                       // Load cell polling frequency (50Hz)
 
+// Load cell stall recovery: if the HX711 stops delivering samples at runtime
+// (supply dip or interference when the motor starts), reset it instead of
+// leaving the scale dead until the next power cycle.
+#define SYS_LOADCELL_STALL_RECOVERY_MS 300                                     // No sample for this long triggers a reset (3 missed samples at 10 SPS)
+#define SYS_LOADCELL_RECOVERY_MIN_INTERVAL_MS 20000                            // At most one reset per 20 s (three a minute)
+#define SYS_LOADCELL_RECOVERY_DISCARD_MS 500                                   // Samples discarded after a reset while the HX711 settles
+
 
 //------------------------------------------------------------------------------
 // TIME CONVERSION CONSTANTS
@@ -70,6 +77,7 @@
 // Load cell startup normally finishes about 7 s after power-on; past this the
 // Ready screen reports the scale as unavailable instead of still starting.
 #define SYS_SCALE_STARTUP_TIMEOUT_MS 20000
+#define SYS_SCALE_STARTUP_HOLD_MS 2000  // "Scale starting" stays this much longer once the first tare is done
 
 // Finished screen: a cup reading at or below this counts as lifted off. It
 // ends the result timer and triggers Return on Removal.
@@ -77,6 +85,16 @@
 // The result timer keeps the finished screen up, and the display awake, for
 // at most this long while the cup stays on the scale.
 #define SYS_RESULT_TIMER_LIMIT_MS (30UL * 60UL * 1000UL)
+
+//------------------------------------------------------------------------------
+// WI-FI AND THE POWER SUPPLY
+//------------------------------------------------------------------------------
+// With 1 the Wi-Fi radio is off while a grind runs on every grinder until the
+// user chooses otherwise (Menu → Wi-Fi → Pause). With 0 that is only the
+// starting choice on a grinder that has restarted on a brownout.
+#ifndef NET_WIFI_REST_WHILE_GRINDING_DEFAULT
+#define NET_WIFI_REST_WHILE_GRINDING_DEFAULT 0
+#endif
 
 //------------------------------------------------------------------------------
 // JOG ACCELERATION CONFIGURATION

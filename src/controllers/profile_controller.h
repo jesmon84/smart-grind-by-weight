@@ -16,6 +16,8 @@ private:
     auto lock_profiles() const { return std::unique_lock<std::recursive_mutex>(mutex_); }
     Profile profiles[USER_PROFILE_COUNT];
     int current_profile;
+    // The profile held in preferences: the one a restart returns to.
+    int saved_profile;
     GrindMode current_grind_mode;
     Preferences* preferences;
 
@@ -31,7 +33,17 @@ public:
     void save_profiles();
     void save_current_profile();
     
+    // Selects a profile and stores it as the one a restart returns to.
     void set_current_profile(int index);
+    // Selects a profile without storing it. Swiping across the profile pages
+    // to reach the menu shows each profile in passing; only one the user
+    // stays on or grinds with should be stored.
+    void select_profile(int index);
+    // Stores the selected profile, if it is not the stored one already.
+    // Returns false when the write failed.
+    bool save_selected_profile();
+    // Returns to the stored profile, dropping a selection that was not stored.
+    void restore_saved_profile();
     int get_current_profile() const { const auto lock = lock_profiles(); return current_profile; }
     float get_current_weight() const { const auto lock = lock_profiles(); return profiles[current_profile].weight; }
     float get_current_time() const { const auto lock = lock_profiles(); return profiles[current_profile].time_seconds; }

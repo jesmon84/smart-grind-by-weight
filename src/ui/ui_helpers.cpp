@@ -53,7 +53,7 @@ void set_label_text_float(lv_obj_t* label, float value, const char* unit) {
     char buf[24];
     
     if (unit) {
-        snprintf(buf, sizeof(buf), "%.2fg %s", value, unit);
+        snprintf(buf, sizeof(buf), "%.2f %s", value, unit);
     } else {
         snprintf(buf, sizeof(buf), "%.2f", value);
     }
@@ -123,6 +123,9 @@ lv_obj_t* create_data_label(lv_obj_t* parent, const char* name, lv_obj_t** value
     if (stacked) {
         lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        // The value sits close under its name, with the gap after the pair.
+        lv_obj_set_style_pad_row(container, 0, 0);
+        lv_obj_set_style_margin_bottom(container, 10, 0);
     } else {
         lv_obj_set_flex_flow(container, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(container, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END);
@@ -151,6 +154,10 @@ lv_obj_t* create_data_label(lv_obj_t* parent, const char* name, lv_obj_t** value
 
     return container;
 }
+
+// A row of radio buttons is as wide as the other rows of a page, which
+// leaves the scrollbar's strip at the right edge free.
+static constexpr int32_t kRadioRowWidthPx = 260;
 
 // Radio button group data structure
 struct RadioButtonGroupData {
@@ -259,7 +266,7 @@ lv_obj_t* create_radio_button_group(
     if (layout == LV_FLEX_FLOW_ROW) {
         lv_obj_set_flex_align(group_container, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(group_container, 10, 0);
-        lv_obj_set_size(group_container, 280, LV_SIZE_CONTENT);
+        lv_obj_set_size(group_container, kRadioRowWidthPx, LV_SIZE_CONTENT);
     } else {
         lv_obj_set_flex_align(group_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_row(group_container, 10, 0);
@@ -277,7 +284,7 @@ lv_obj_t* create_radio_button_group(
     // Calculate button width if auto
     int32_t actual_button_width = button_width;
     if (layout == LV_FLEX_FLOW_ROW && button_width == -1) {
-        actual_button_width = (280 - (option_count - 1) * 10) / option_count;
+        actual_button_width = (kRadioRowWidthPx - (option_count - 1) * 10) / option_count;
     }
     
     // Create buttons

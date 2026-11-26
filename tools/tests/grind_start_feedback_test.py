@@ -31,9 +31,11 @@ struct Controller {
     void return_to_idle() {}
 };
 struct Profile {
+    int saves=0;
     int get_current_profile() { return 0; }
     float get_current_weight() { return 18; }
     float get_current_time() { return 5; }
+    bool save_selected_profile() { ++saves; return true; }
 };
 struct UIManager {
     State* state_machine;
@@ -41,6 +43,7 @@ struct UIManager {
     Profile* profile_controller;
     int current_tab=1, notices=0;
     GrindMode current_mode=GrindMode::WEIGHT;
+    bool profile_grind_allowed() const { return true; }
     void switch_to_state(UIState s) { state_machine->current=s; }
     void show_confirmation(const char* title, const char*, const char*, int,
                            std::nullptr_t, const char*) {
@@ -49,7 +52,8 @@ struct UIManager {
 };
 struct GrindingUIController {
     UIManager* ui_manager_;
-    char error_message_[32]{}; float error_grind_weight_=0; int error_grind_progress_=0;
+    char error_message_[32]{}; char error_title_[16]{};
+    float error_grind_weight_=0; int error_grind_progress_=0;
     void handle_grind_button();
 };
 ''' + source[start:end] + r'''
@@ -62,6 +66,9 @@ int main() {
             GrindingUIController handler{&ui}; handler.handle_grind_button();
             assert(control.calls==1 && control.stops==0);
             assert(ui.notices==(accepted ? 0 : 1));
+            // Only a profile grind that really started stores its profile as
+            // the one to return to; a manual grind or a refused start does not.
+            assert(profile.saves==((accepted && tab==1) ? 1 : 0));
         }
     }
 }

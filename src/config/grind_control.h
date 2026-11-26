@@ -36,6 +36,7 @@ enum class GrinderPurgeMode {
 
 // Flow rate detection
 #define GRIND_FLOW_DETECTION_THRESHOLD_GPS 0.5f                           // Minimum coffee flow rate to establish first grinds reachinig the cup = latency
+#define GRIND_FLOW_START_RISE_G 0.25f                                     // On a shaking bench the averaged weight must also have risen this much
 
 // Undershoot strategy - determine when to stop grinding during the predictive phase
 #define GRIND_UNDERSHOOT_TARGET_G 1.0f                                    // Default conservative undershoot target
@@ -86,6 +87,39 @@ enum class GrinderPurgeMode {
 // Scale settling timing
 #define GRIND_SCALE_PRECISION_SETTLING_TIME_MS 500                                // High-precision settling time
 #define GRIND_SCALE_SETTLING_TIMEOUT_MS 10000                                     // Maximum time to wait for settling
+
+// Shaky-bench handling, for a grinder on a bench that vibrates (a 3D printer
+// next to it). The scale never reads still there, and every wait for a still
+// reading holds the grind until its timeout. With the handling on, the waits
+// below have limits and averages may stand in for still readings (see
+// src/controllers/settle_wait_policy.h). It is off until switched on under
+// Menu → Grind Settings → Shaky Bench (preference "shaky_bench"), because with
+// it on a hand kept on the portafilter can be weighed as coffee. A build made
+// with -DGRIND_SHAKY_BENCH_DEFAULT=1 switches it on for a grinder that has no
+// stored choice yet, and stores that.
+#ifndef GRIND_SHAKY_BENCH_DEFAULT
+#define GRIND_SHAKY_BENCH_DEFAULT 0
+#endif
+
+// Limits on waiting for a still scale with shaky-bench handling on.
+#define GRIND_TARE_SETTLE_LIMIT_MS 4000                                           // From the start of taring until the motor may start
+#define GRIND_PRIME_SETTLE_LIMIT_MS 4000                                          // After the prime (GRIND_SCALE_SETTLING_TIMEOUT_MS without the handling)
+#define GRIND_MOTOR_SETTLE_LIMIT_MS 500                                           // After the motor stops, on top of the minimum wait
+#define GRIND_WEIGHT_SETTLE_LIMIT_MS 2500                                         // Before a pulse is decided or the final weight is taken
+
+// Past its limit, a wait that needs a weight may then take the average of the
+// readings instead of a still one: bench vibration averages out. A hand on
+// the portafilter does not, so a grind only does this once it has shown its
+// bench to be shaking (the scale came to rest neither after taring nor after
+// the prime), and only while the readings look like one weight being shaken.
+// Otherwise the wait goes on.
+#define GRIND_QUIET_BENCH_WINDOW_MS 1000                                          // A scale still for this long after taring stands on a quiet bench
+#define GRIND_QUIET_BENCH_SETTLE_MS 1500                                          // So does one that reads still this soon after the prime
+#define GRIND_UNSTEADY_AVERAGE_WINDOW_MS 2000                                     // Readings averaged; no longer than the weight limit above
+#define GRIND_UNSTEADY_SCATTER_LIMIT_G 0.20f                                      // Largest standard deviation of those readings (a printer measured 0.07-0.12)
+#define GRIND_UNSTEADY_DRIFT_LIMIT_G 0.06f                                        // Largest difference between the averages of their two halves (measured up to 0.04)
+#define GRIND_UNSTEADY_DROP_LIMIT_G 0.30f                                         // A pulse needs an average no further than this below the last known weight
+#define GRIND_UNSTEADY_ZERO_SHIFT_LIMIT_G 0.15f                                   // Furthest a shaken zero is moved to the average; more than that is not vibration
 
 // Tare and calibration timing (hardware sample rate dependent)
 #define GRIND_TARE_SAMPLE_WINDOW_MS 500                                           // Time window for tare sampling

@@ -22,6 +22,8 @@
 namespace {
 constexpr int32_t kAdcMaximumRaw = 0xFFFFFF;
 constexpr int32_t kAdcSaturationMargin = 0x00FFFF;
+// Half a second of rail readings at 10 SPS before the signal is reported out of range.
+constexpr uint8_t kRailSamplesForOutOfRange = 5;
 }
 
 WeightSensor::WeightSensor() {
@@ -455,6 +457,39 @@ float WeightSensor::get_weight_smoothed(uint32_t window_ms) const {
     return raw_to_weight(raw_filter.get_smoothed_raw(window_ms));
 }
 
+float WeightSensor::get_untared_level(uint32_t window_ms) const {
+    if (raw_filter.get_sample_count() == 0 || fabsf(cal_factor) < 1e-6f) return NAN;
+    return static_cast<float>(raw_filter.get_smoothed_raw(window_ms)) / cal_factor;
+}
+
+bool WeightSensor::get_shaken_weight(uint32_t window_ms, float* weight_out) const {
+    // The readings have to cover the window, not only its end.
+    int32_t raw_delta = 0;
+    uint32_t span_ms = 0;
+    if (!raw_filter.get_window_delta(window_ms, &raw_delta, &span_ms) || span_ms < (window_ms / 4) * 3) {
+        return false;
+    }
+
+    // A hand on the vessel scatters the readings far wider than a bench does.
+    if (get_standard_deviation_g(window_ms) > GRIND_UNSTEADY_SCATTER_LIMIT_G) {
+        return false;
+    }
+
+    // Grounds still landing, or a load coming or going, move the average. The
+    // newer half of a steady window agrees with the whole; twice their gap
+    // is the gap between its two halves.
+    const float average_g = raw_to_weight(raw_filter.get_smoothed_raw(window_ms));
+    const float newer_half_g = raw_to_weight(raw_filter.get_smoothed_raw(window_ms / 2));
+    if (fabsf(newer_half_g - average_g) * 2.0f > GRIND_UNSTEADY_DRIFT_LIMIT_G) {
+        return false;
+    }
+
+    if (weight_out) {
+        *weight_out = average_g;
+    }
+    return true;
+}
+
 bool WeightSensor::get_weight_delta(uint32_t window_ms, float* delta_out,
                                     int* sample_count_out, uint32_t* span_ms_out) const {
     if (!delta_out) {
@@ -750,6 +785,10 @@ bool WeightSensor::sample_and_feed_filter() {
             // let these refresh freshness, contaminate filters, or complete tare.
             if (raw_adc <= kAdcSaturationMargin ||
                 raw_adc >= kAdcMaximumRaw - kAdcSaturationMargin) {
+                if (consecutive_rail_samples_ < UINT8_MAX) consecutive_rail_samples_++;
+                if (consecutive_rail_samples_ >= kRailSamplesForOutOfRange) {
+                    signal_out_of_range_.store(true);
+                }
                 static uint32_t last_saturation_log_ms = 0;
                 if (last_saturation_log_ms == 0 || timestamp - last_saturation_log_ms >= 5000) {
                     LOG_BLE("WeightSensor: HX711 input near ADC rail - raw=%ld; check load-cell wiring and preload\n",
@@ -758,6 +797,8 @@ bool WeightSensor::sample_and_feed_filter() {
                 }
                 return false;
             }
+            consecutive_rail_samples_ = 0;
+            signal_out_of_range_.store(false);
             // Thread-safe sample feeding (CircularBufferMath is single-producer safe)
             raw_filter.add_sample(raw_adc, timestamp);
             last_sample_ms_.store(timestamp);

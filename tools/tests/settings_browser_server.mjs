@@ -6,7 +6,7 @@ import {readFileSync} from 'node:fs';
 
 const source = readFileSync(new URL('../../src/network/device_page.h', import.meta.url), 'utf8');
 const page = source.split('R"WEB(')[1].split(')WEB";')[0];
-let scenario = 'saved', submitted = false, polls = 0;
+let scenario = 'saved', submitted = false, polls = 0, requested = 0;
 const settings = {
   current_profile: 1, grind_mode: 'weight', profiles: [9, 18, 20].map(weight => ({weight, time: 8})),
   automatic: {start: false, return: false, threshold_g: 50}, swipe_enabled: false,
@@ -51,9 +51,20 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/v1/status') return json({
     firmware: {version: '99.0.0', build: 'LOCAL UI TEST'},
     device: {model: 'Local fixture (no hardware)', hardware_revision: 'v2', id: 'test-only'},
-    network: {ssid: 'Local UI test', hostname: 'localhost', ip: '127.0.0.1'},
+    network: {ssid: 'Local UI test', hostname: 'localhost', ip: '127.0.0.1', rssi: -58},
+    system: {reset_reason: 'BROWNOUT', brownout_restarts: 3, cpu_mhz: 240,
+      last_brownout: {uptime_s: 125, grind_phase: 'PREDICTIVE', motor_on: true, wifi: 'connected',
+        display_on: true, brightness: 255, cpu_mhz: 240}},
+    display: {panel_on: true, brightness: 255, panel_refreshes: 42, reset_supported: true,
+      frame_signal: 'running', panel_resets: {display_off: 4, frame_lost: 1, requested},
+      faults: 2, recoveries: 2},
+    touch: {bus_resets: 0, read_errors: 0},
     ota: {active: false, preparing: false, progress: 0}
   });
+  if (url.pathname === '/api/v1/display/reset' && req.method === 'POST') {
+    requested++;
+    return json({accepted: true}, 202);
+  }
   if (url.pathname === '/api/v1/history') return json({sessions: []});
   return json({error: 'Not supported by local UI fixture'}, 404);
 });

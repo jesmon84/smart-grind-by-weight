@@ -8,7 +8,10 @@
 #include "grind_session.h"
 #include "grind_session_result.h"
 #include "grind_strategy.h"
+#include "coast_learning.h"
 #include "net_weight_guard.h"
+#include "settle_wait_policy.h"
+#include "vessel_weight_tracker.h"
 #include "weight_grind_strategy.h"
 #include "time_grind_strategy.h"
 #include "../system/operation_interlock.h"
@@ -25,7 +28,8 @@ struct FlashOpRequest {
     enum Type {
         START_GRIND_SESSION,
         END_GRIND_SESSION,
-        UPDATE_MANUAL_RUNTIME
+        UPDATE_MANUAL_RUNTIME,
+        SAVE_LEARNED_COAST
     };
     
     Type operation_type;
@@ -36,6 +40,8 @@ struct FlashOpRequest {
     uint8_t pulse_count;     // For END_GRIND_SESSION
     uint32_t completed_at_ms; // Absolute clock at terminal phase entry, not save time
     uint32_t motor_runtime_ms; // For UPDATE_MANUAL_RUNTIME
+    float learned_coast_ms;    // For SAVE_LEARNED_COAST
+    uint32_t learned_coast_grinds;
 };
 
 // Log message structure for Core 0 → Core 1 communication
@@ -168,6 +174,42 @@ private:
     // Detect actual cup/portafilter removal without reacting to isolated
     // negative load-cell spikes.
     NetWeightRemovalGuard net_weight_removal_guard_;
+    // Scale sample that guard last judged: the loop runs several times per sample.
+    uint32_t guard_sample_ms_ = 0;
+    // What stood on the scale when a grind last zeroed it, and that zero. A
+    // later grind on the same zero reads the vessel as about nothing, but its
+    // weight is still this plus the reading (see vessel_weight_estimate()).
+    float vessel_at_grind_zero_g_ = 0.0f;
+    int32_t grind_zero_offset_ = 0;
+    bool grind_zero_known_ = false;
+    // Stands in when no grind's zero tells, for instance after power-up with
+    // the vessel already on the scale.
+    VesselWeightTracker vessel_tracker_;
+    unsigned long last_vessel_track_ms_ = 0;
+    float vessel_track_cal_factor_ = 0.0f;
+
+    // Start of the current wait for a still scale (see settle_wait_policy.h),
+    // and whether it has already logged that it is waiting on past its limit.
+    unsigned long settle_wait_start_ms_ = 0;
+    bool settle_wait_reported_ = false;
+    // Shaky-bench handling for this grind (see settle_wait_policy.h), read
+    // from the preferences as it starts.
+    bool shaky_bench_handling_ = false;
+    // Whether this grind found the scale at rest after taring and after the
+    // prime; if neither, its bench is shaking (bench_is_shaking()).
+    bool quiet_after_tare_ = false;
+    bool quiet_after_prime_ = false;
+    // Lowest averaged weight of the main run so far, which is its weight
+    // before any of its coffee lands.
+    float flow_baseline_weight_ = 0.0f;
+    bool flow_baseline_known_ = false;
+
+    // The time coffee keeps landing after the motor stops, learnt from past
+    // grinds (coast_learning.h), and the main run's flow when it last measured
+    // it, which sets the stop and, once the grounds are in, the lesson.
+    CoastLearner coast_learner_;
+    float main_run_flow_gps_ = 0.0f;
+    bool coast_save_pending_ = false;
 
     DiagnosticsController* diagnostics_controller_ = nullptr;
 
@@ -230,6 +272,8 @@ public:
     bool is_control_loop_paused() const { const auto control_lock = lock_control(); return control_loop_paused_; }
     GrindPhase get_phase() const { const auto control_lock = lock_control(); return phase; }
     const char* get_current_phase_name() const { const auto control_lock = lock_control(); return get_phase_name(phase); }
+    // The name of any phase, for a phase recorded earlier.
+    const char* phase_name(GrindPhase p) const { return get_phase_name(p); }
     int get_current_progress_percent() const { const auto control_lock = lock_control(); return get_progress_percent(); }
     float get_target_weight() const { const auto control_lock = lock_control(); return target_weight; }
     uint32_t get_target_time_ms() const { const auto control_lock = lock_control(); return target_time_ms; }
@@ -244,6 +288,9 @@ public:
     static constexpr const char* PREF_KEY_GRIND_FRESHNESS_HOURS = "freshness_hrs";
     static constexpr const char* PREF_KEY_COAST_RATIO = "coast_ratio";
     static constexpr const char* PREF_KEY_LAST_GRIND_RUNTIME = "last_grind_ms";
+    static constexpr const char* PREF_KEY_SHAKY_BENCH = "shaky_bench";
+    static constexpr const char* PREF_KEY_COAST_LEARNT_MS = "coast_learn_ms";
+    static constexpr const char* PREF_KEY_COAST_LEARNT_GRINDS = "coast_learn_n";
     GrindMode get_mode() const { const auto control_lock = lock_control(); return mode; }
     GrindSessionDescriptor get_session_descriptor() const { const auto control_lock = lock_control(); return session_descriptor; }
     
@@ -277,6 +324,14 @@ public:
     void load_coast_ratio();
     bool save_coast_ratio(float value);
 
+    // Shaky-bench handling (Menu → Grind Settings → Shaky Bench): the stored
+    // choice, which a grind reads as it starts.
+    bool shaky_bench_enabled() const;
+    bool save_shaky_bench(bool enabled);
+
+    // The after-run time learnt from past grinds; 0 until a grind has taught it.
+    float get_learned_coast_ms() const { const auto control_lock = lock_control(); return coast_learner_.known() ? coast_learner_.coast_ms() : 0.0f; }
+
     // Grind freshness accessors
     bool get_grinder_purged_since_boot() const { const auto control_lock = lock_control(); return grinder_purged_since_boot; }
     uint64_t get_last_purge_runtime_ms() const { const auto control_lock = lock_control(); return last_purge_runtime_ms; }
@@ -287,8 +342,32 @@ public:
 private:
     bool queue_terminal_session();
     void switch_phase(GrindPhase new_phase, const GrindLoopData& loop_data = {});
-    void final_measurement(const GrindLoopData& loop_data);
+    void final_measurement(const GrindLoopData& loop_data, float measured_weight);
     void monitor_mechanical_instability(const GrindLoopData& loop_data);
+
+    // One step of a wait for a still scale; `past_limit` says what may end
+    // it once the limit has passed. With USE_AVERAGE that is an average of
+    // readings that look like one weight being shaken and is at least
+    // `least_average_g`; `weight_out` then holds it in place of a settled
+    // reading.
+    SettleWait wait_for_still_scale(uint32_t still_window_ms, uint32_t limit_ms, PastLimit past_limit,
+                                    const GrindLoopData& loop_data, float* weight_out = nullptr,
+                                    float least_average_g = -1.0e9f);
+    // Whether this grind goes by averages: shaky-bench handling is on and
+    // the grind has shown its bench to be shaking.
+    bool on_shaking_bench() const {
+        return shaky_bench_handling_ && bench_is_shaking(quiet_after_tare_, quiet_after_prime_);
+    }
+    // What this grind's waits may do past their limits.
+    PastLimit stillness_wait_past_limit() const { return ::stillness_wait_past_limit(shaky_bench_handling_); }
+    PastLimit weight_wait_past_limit() const {
+        return ::weight_wait_past_limit(shaky_bench_handling_, mode,
+                                        bench_is_shaking(quiet_after_tare_, quiet_after_prime_));
+    }
+    // Whether the prime is followed by the prompt to empty the portafilter.
+    bool purge_prompt_due() const;
+    // Keeps the vessel tracker up to date while no grind is running.
+    void track_resting_scale(unsigned long now);
 
     bool check_timeout() const;
     uint8_t get_current_phase_id() const;
@@ -312,4 +391,10 @@ private:
     // `title` replaces the "ERROR" heading on the error screen.
     void set_error_message(const char* message, const char* title = nullptr);
     void queue_manual_runtime(uint32_t now_ms);
+
+    // Learnt after-run time: read at start-up, taught by each main run and
+    // stored from the UI task through the flash queue.
+    void load_learned_coast();
+    void learn_coast_from_main_run(float settled_weight);
+    void queue_learned_coast_save();
 };

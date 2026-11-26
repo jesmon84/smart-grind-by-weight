@@ -2,10 +2,12 @@
 
 #include <ESPmDNS.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <time.h>
 
 #include "../config/build_info.h"
 #include "../config/constants.h"
+#include "../system/health_counters.h"
 
 // wifi_join_failure.h mirrors these ESP-IDF codes so it can be tested on a desktop.
 namespace reason = wifi_disconnect_reason;
@@ -58,7 +60,11 @@ void SmartGrindNetworkManager::init(Preferences* preferences) {
 }
 
 void SmartGrindNetworkManager::update() {
-    if (!initialized_.load() || !enabled_.load()) return;
+    if (!initialized_.load()) return;
+    apply_enable_request();
+    if (!enabled_.load()) return;
+    apply_radio_rest();
+    if (state() == NetworkState::WIFI_RESTING) return;
 
     const wl_status_t wifi_status = WiFi.status();
     if (wifi_status == WL_CONNECTED) {
@@ -81,20 +87,74 @@ void SmartGrindNetworkManager::update() {
         const uint16_t disconnect_reason = last_disconnect_reason_.load();
         const WifiJoinFailure failure = classify_wifi_disconnect(disconnect_reason);
         last_join_failure_.store(failure);
+        last_join_failure_reason_.store(disconnect_reason);
         WiFi.disconnect(false, false);
         if (ever_connected_) {
             LOG_BLE("[WIFI] Reconnection timed out: %s (reason %u); retrying in %lus\n",
                     wifi_join_failure_summary(failure), static_cast<unsigned>(disconnect_reason),
                     RETRY_DELAY_MS / 1000);
             set_state(NetworkState::WIFI_RETRY_WAIT);
+        } else if (first_join_attempts_ < FIRST_JOIN_ATTEMPTS &&
+                   failure != WifiJoinFailure::PASSWORD_REJECTED) {
+            // A wrong password will not fix itself, so it goes straight to setup.
+            LOG_BLE("[WIFI] Join attempt %u/%u failed: %s (reason %u); retrying in %lus\n",
+                    static_cast<unsigned>(first_join_attempts_),
+                    static_cast<unsigned>(FIRST_JOIN_ATTEMPTS),
+                    wifi_join_failure_summary(failure), static_cast<unsigned>(disconnect_reason),
+                    FIRST_JOIN_RETRY_DELAY_MS / 1000);
+            set_state(NetworkState::WIFI_RETRY_WAIT);
         } else {
             LOG_BLE("[WIFI] Configured network unavailable: %s (reason %u); starting setup mode\n",
                     wifi_join_failure_summary(failure), static_cast<unsigned>(disconnect_reason));
             set_state(NetworkState::WIFI_SETUP_REQUIRED);
         }
-    } else if (state() == NetworkState::WIFI_RETRY_WAIT && elapsed_ms >= RETRY_DELAY_MS) {
+    } else if (state() == NetworkState::WIFI_RETRY_WAIT) {
+        const uint32_t retry_delay_ms = ever_connected_ ? RETRY_DELAY_MS : FIRST_JOIN_RETRY_DELAY_MS;
+        if (elapsed_ms >= retry_delay_ms) begin_connection();
+    }
+}
+
+void SmartGrindNetworkManager::apply_enable_request() {
+    const int8_t request = enable_request_.exchange(-1);
+    if (request < 0) return;
+    const bool enable = request == 1;
+    if (enable == enabled_.load()) return;
+    const bool stored = set_enabled(enable);
+    LOG_BLE("[WIFI] Switched %s%s\n", enable ? "on" : "off",
+            stored ? "" : " (the choice could not be stored)");
+}
+
+// Leaves the joined network for the length of a grind and joins it again
+// afterwards (see radio_rest_policy.h). A station that is not connected has
+// its radio powered down. Only a station that has joined or is joining rests;
+// the setup network is left alone.
+void SmartGrindNetworkManager::apply_radio_rest() {
+    const NetworkState current = state();
+    if (radio_rest_wanted_.load()) {
+        if (current != NetworkState::WIFI_CONNECTED && current != NetworkState::WIFI_CONNECTING &&
+            current != NetworkState::WIFI_RETRY_WAIT) {
+            return;
+        }
+        if (mdns_started_) {
+            MDNS.end();
+            mdns_started_ = false;
+        }
+        WiFi.setAutoReconnect(false);
+        // Asked of the driver itself: WiFi.disconnect() does nothing for a
+        // station that is still joining, and that attempt has to end too.
+        esp_wifi_disconnect();
+        set_state(NetworkState::WIFI_RESTING);
+        LOG_BLE("[WIFI] Radio off for the grind\n");
+    } else if (current == NetworkState::WIFI_RESTING) {
+        LOG_BLE("[WIFI] Radio back on after the grind\n");
         begin_connection();
     }
+}
+
+bool SmartGrindNetworkManager::set_rest_while_grinding(bool rest) {
+    if (!preferences_) return false;
+    rest_while_grinding_.store(rest);
+    return preferences_->putBool("wifi_rest", rest) != 0;
 }
 
 bool SmartGrindNetworkManager::set_enabled(bool enabled) {
@@ -108,6 +168,7 @@ bool SmartGrindNetworkManager::set_enabled(bool enabled) {
     } else if (!has_credentials()) {
         set_state(NetworkState::WIFI_NO_CREDENTIALS);
     } else {
+        reset_join_attempts();
         begin_connection();
     }
     return true;
@@ -137,12 +198,16 @@ bool SmartGrindNetworkManager::set_credentials(const String& ssid, const String&
     // When credentials arrive through the setup AP, keep that link alive long
     // enough to return the success page. ProvisioningService performs a clean
     // reboot into station mode after the HTTP response has been queued.
-    if (enabled_.load() && state() != NetworkState::WIFI_SETUP_AP) begin_connection();
+    if (enabled_.load() && state() != NetworkState::WIFI_SETUP_AP) {
+        reset_join_attempts();
+        begin_connection();
+    }
     return true;
 }
 
 bool SmartGrindNetworkManager::connect_saved_credentials() {
     if (!initialized_.load() || !enabled_.load() || !has_credentials()) return false;
+    reset_join_attempts();
     begin_connection();
     return state() == NetworkState::WIFI_CONNECTING;
 }
@@ -192,10 +257,19 @@ String SmartGrindNetworkManager::ip_address() const {
     return is_connected() ? WiFi.localIP().toString() : String();
 }
 
+int SmartGrindNetworkManager::rssi_dbm() const {
+    return is_connected() ? static_cast<int>(WiFi.RSSI()) : 0;
+}
+
 String SmartGrindNetworkManager::join_failure_summary() const {
     const WifiJoinFailure failure = last_join_failure();
     if (failure == WifiJoinFailure::NONE) return String();
-    return "Could not join " + network_name() + ": " + wifi_join_failure_summary(failure) + ".";
+    String summary = "Could not join " + network_name() + ": " + wifi_join_failure_summary(failure);
+    // The ESP-IDF reason code tells apart causes that share one summary,
+    // such as an access point refusing the grinder or dropping a weak link.
+    const uint16_t reason_code = last_join_failure_reason_.load();
+    if (reason_code != wifi_disconnect_reason::NONE) summary += " (reason " + String(reason_code) + ")";
+    return summary + ".";
 }
 
 String SmartGrindNetworkManager::join_failure_explanation() const {
@@ -206,6 +280,14 @@ String SmartGrindNetworkManager::join_failure_explanation() const {
 
 void SmartGrindNetworkManager::load_settings() {
     enabled_.store(preferences_ && preferences_->getBool("wifi_on", true));
+    // A grinder that has restarted on a brownout has a supply too weak for a
+    // grind with the radio on, so there the rest is on until the user says
+    // otherwise.
+    const bool rest_by_default = NET_WIFI_REST_WHILE_GRINDING_DEFAULT ||
+                                 health_counters.brownout_restarts() > 0;
+    rest_while_grinding_.store(preferences_ && preferences_->isKey("wifi_rest")
+                                   ? preferences_->getBool("wifi_rest", rest_by_default)
+                                   : rest_by_default);
     ssid_ = preferences_ ? preferences_->getString("wifi_ssid", "") : String();
     password_ = preferences_ ? preferences_->getString("wifi_pass", "") : String();
     hostname_ = preferences_ ? sanitize_hostname(preferences_->getString("wifi_host", "")) : String();
@@ -228,14 +310,24 @@ void SmartGrindNetworkManager::begin_connection() {
     }
 
     last_disconnect_reason_.store(reason::NONE);
-    last_join_failure_.store(WifiJoinFailure::NONE);
+    if (!ever_connected_ && first_join_attempts_ < UINT8_MAX) first_join_attempts_++;
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
     WiFi.setHostname(hostname.c_str());
+    // The default fast scan joins the first matching access point it hears,
+    // which may be a distant one. Scan every channel and pick the strongest.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(ssid.c_str(), password.c_str());
     set_state(NetworkState::WIFI_CONNECTING);
     LOG_BLE("[WIFI] Connecting to configured network as %s.local\n", hostname.c_str());
+}
+
+void SmartGrindNetworkManager::reset_join_attempts() {
+    first_join_attempts_ = 0;
+    last_join_failure_.store(WifiJoinFailure::NONE);
+    last_join_failure_reason_.store(reason::NONE);
 }
 
 bool SmartGrindNetworkManager::start_setup_access_point(const String& ssid, const String& password) {
@@ -263,7 +355,9 @@ bool SmartGrindNetworkManager::start_setup_access_point(const String& ssid, cons
 
 void SmartGrindNetworkManager::handle_connected() {
     ever_connected_ = true;
+    first_join_attempts_ = 0;
     last_join_failure_.store(WifiJoinFailure::NONE);
+    last_join_failure_reason_.store(reason::NONE);
     set_state(NetworkState::WIFI_CONNECTED);
     const String current_hostname = hostname();
     const String current_device_id = device_id();

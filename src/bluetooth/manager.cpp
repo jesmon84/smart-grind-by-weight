@@ -1604,6 +1604,46 @@ void BluetoothManager::generate_diagnostic_report() {
     );
     send_chunk(buf);
 
+    // Section 9b: Grind Control Constants (Part 4 - Waiting for a still scale)
+    snprintf(buf, sizeof(buf),
+        "[COMPILE-TIME PARAMETERS - GRIND_CONTROL.H PART 4]\n"
+        "  GRIND_TARE_SETTLE_LIMIT_MS: %d\n"
+        "  GRIND_PRIME_SETTLE_LIMIT_MS: %d\n"
+        "  GRIND_MOTOR_SETTLE_LIMIT_MS: %d\n"
+        "  GRIND_WEIGHT_SETTLE_LIMIT_MS: %d\n"
+        "  GRIND_UNSTEADY_AVERAGE_WINDOW_MS: %d\n"
+        "  GRIND_UNSTEADY_SCATTER_LIMIT_G: %.2f\n"
+        "  GRIND_UNSTEADY_DRIFT_LIMIT_G: %.2f\n"
+        "  GRIND_UNSTEADY_DROP_LIMIT_G: %.2f\n"
+        "\n",
+        GRIND_TARE_SETTLE_LIMIT_MS,
+        GRIND_PRIME_SETTLE_LIMIT_MS,
+        GRIND_MOTOR_SETTLE_LIMIT_MS,
+        GRIND_WEIGHT_SETTLE_LIMIT_MS,
+        GRIND_UNSTEADY_AVERAGE_WINDOW_MS,
+        GRIND_UNSTEADY_SCATTER_LIMIT_G,
+        GRIND_UNSTEADY_DRIFT_LIMIT_G,
+        GRIND_UNSTEADY_DROP_LIMIT_G
+    );
+    send_chunk(buf);
+
+    // Section 9c: Grind Control Constants (Part 5 - Shaky-bench handling)
+    snprintf(buf, sizeof(buf),
+        "[COMPILE-TIME PARAMETERS - GRIND_CONTROL.H PART 5]\n"
+        "  GRIND_SHAKY_BENCH_DEFAULT: %d\n"
+        "  GRIND_QUIET_BENCH_WINDOW_MS: %d\n"
+        "  GRIND_QUIET_BENCH_SETTLE_MS: %d\n"
+        "  GRIND_UNSTEADY_ZERO_SHIFT_LIMIT_G: %.2f\n"
+        "  GRIND_FLOW_START_RISE_G: %.2f\n"
+        "\n",
+        GRIND_SHAKY_BENCH_DEFAULT,
+        GRIND_QUIET_BENCH_WINDOW_MS,
+        GRIND_QUIET_BENCH_SETTLE_MS,
+        GRIND_UNSTEADY_ZERO_SHIFT_LIMIT_G,
+        GRIND_FLOW_START_RISE_G
+    );
+    send_chunk(buf);
+
     // Section 10: Autotune Constants
     snprintf(buf, sizeof(buf),
         "[COMPILE-TIME PARAMETERS - AUTOTUNE]\n"

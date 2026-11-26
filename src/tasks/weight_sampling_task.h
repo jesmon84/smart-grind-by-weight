@@ -47,6 +47,11 @@ private:
     // Hardware state
     bool hardware_initialized;
     bool hardware_validation_passed;
+
+    // Runtime stall recovery
+    bool stall_recovery_attempted;
+    uint32_t last_stall_recovery_ms;
+    uint32_t stall_recovery_count;
     
     // Static instance for task callback
     static WeightSamplingTask* instance;
@@ -83,6 +88,8 @@ private:
     // Hardware management (extracted from RealtimeController)
     bool initialize_hx711_hardware();
     void sample_and_feed_weight_sensor();
+    void recover_stalled_sampling_if_needed();
+    bool reset_hx711_after_stall();
     
     // Performance tracking
     void record_timing(uint32_t start_time, uint32_t end_time);

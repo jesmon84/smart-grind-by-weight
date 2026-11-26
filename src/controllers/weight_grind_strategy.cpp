@@ -88,7 +88,23 @@ void WeightGrindStrategy::run_predictive_phase(GrindController& controller,
         const uint32_t flow_detection_window_ms = 500;
         float current_flow_rate = controller.weight_sensor->get_flow_rate(flow_detection_window_ms);
 
-        if (current_flow_rate >= GRIND_FLOW_DETECTION_THRESHOLD_GPS) {
+        // The flow rate comes from two readings half a second apart. On a
+        // shaking bench those differ by enough to look like flow with nothing
+        // landing, and a latency measured too short stops the motor too
+        // late. There the averaged weight has to have risen as well, over
+        // the lowest it has been in this run: a hand that was resting on the
+        // vessel as the run began only lowers that when it lets go.
+        bool weight_has_risen = true;
+        if (controller.on_shaking_bench()) {
+            const float averaged_weight = controller.weight_sensor->get_weight_high_latency();
+            if (!controller.flow_baseline_known_ || averaged_weight < controller.flow_baseline_weight_) {
+                controller.flow_baseline_weight_ = averaged_weight;
+                controller.flow_baseline_known_ = true;
+            }
+            weight_has_risen = averaged_weight - controller.flow_baseline_weight_ >= GRIND_FLOW_START_RISE_G;
+        }
+
+        if (current_flow_rate >= GRIND_FLOW_DETECTION_THRESHOLD_GPS && weight_has_risen) {
             controller.grind_latency_ms = loop_data.now - controller.phase_start_time;
             controller.flow_start_confirmed = true;
             LOG_BLE("[PREDICTIVE] Flow start CONFIRMED! Latency: %.1fms, Flow: %.2fg/s\n",
@@ -102,8 +118,15 @@ void WeightGrindStrategy::run_predictive_phase(GrindController& controller,
             float current_flow_rate = controller.weight_sensor->get_flow_rate(flow_rate_calc_window_ms);
 
             if (current_flow_rate > GRIND_FLOW_DETECTION_THRESHOLD_GPS) {
-                controller.motor_stop_target_weight = ((controller.grind_latency_ms * controller.get_coast_ratio()) /
-                                                       (float)SYS_MS_PER_SECOND) * current_flow_rate;
+                controller.main_run_flow_gps_ = current_flow_rate;
+                // Once a grind has taught the after-run time, the stop goes by
+                // that and this run's flow (coast_learning.h). Until then the
+                // time comes from this run's flow start and the coast ratio.
+                controller.motor_stop_target_weight =
+                    controller.coast_learner_.known()
+                        ? controller.coast_learner_.stop_offset_g(current_flow_rate)
+                        : ((controller.grind_latency_ms * controller.get_coast_ratio()) /
+                           (float)SYS_MS_PER_SECOND) * current_flow_rate;
             }
         }
     }
@@ -114,6 +137,10 @@ void WeightGrindStrategy::run_predictive_phase(GrindController& controller,
         controller.grinder->stop();
         controller.predictive_end_weight = loop_data.current_weight;
         controller.pulse_flow_rate = controller.weight_sensor->get_flow_rate_95th_percentile(2500);
+        controller.queue_log_message("[PREDICTIVE] Motor stopped at %.2fg, %.2fg short (%s) at %.2fg/s\n",
+                                     loop_data.current_weight, controller.motor_stop_target_weight,
+                                     controller.coast_learner_.known() ? "learnt after-run time" : "flow-start estimate",
+                                     controller.main_run_flow_gps_);
         controller.switch_phase(GrindPhase::PULSE_SETTLING, loop_data);
     }
 }
@@ -124,9 +151,24 @@ void WeightGrindStrategy::run_pulse_decision_phase(GrindController& controller,
         return;
     }
 
+    // Coffee only ever adds weight. On a scale that will not read still, an
+    // average well below what this grind has already weighed is a hand
+    // carrying part of the vessel, not coffee that is missing.
+    const float last_known_weight = controller.pulse_attempts > 0
+        ? controller.pulse_history[controller.pulse_attempts - 1].start_weight
+        : controller.predictive_end_weight;
+
     float settled_weight;
-    if (!controller.weight_sensor->check_settling_complete(GRIND_SCALE_PRECISION_SETTLING_TIME_MS, &settled_weight)) {
+    if (controller.wait_for_still_scale(GRIND_SCALE_PRECISION_SETTLING_TIME_MS, GRIND_WEIGHT_SETTLE_LIMIT_MS,
+                                        controller.weight_wait_past_limit(), loop_data, &settled_weight,
+                                        last_known_weight - GRIND_UNSTEADY_DROP_LIMIT_G) == SettleWait::WAITING) {
         return;
+    }
+
+    // The first settled weight after the main run shows what landed after
+    // the motor stopped: the lesson for the next grind's stop.
+    if (controller.pulse_attempts == 0) {
+        controller.learn_coast_from_main_run(settled_weight);
     }
 
     float conservative_target = controller.target_weight - GRIND_ACCURACY_TOLERANCE_G;
@@ -165,9 +207,15 @@ void WeightGrindStrategy::run_pulse_settling_phase(GrindController& controller,
         return;
     }
 
-    if (loop_data.now - controller.phase_start_time >= controller.grind_latency_ms + GRIND_MOTOR_SETTLING_TIME_MS) {
-        if (controller.weight_sensor->check_settling_complete(GRIND_MOTOR_SETTLING_TIME_MS)) {
-            controller.switch_phase(GrindPhase::PULSE_DECISION, loop_data);
-        }
+    // The grounds in flight land first: nothing is judged before this.
+    const float minimum_wait_ms = controller.grind_latency_ms + GRIND_MOTOR_SETTLING_TIME_MS;
+    if (loop_data.now - controller.phase_start_time < minimum_wait_ms) {
+        return;
+    }
+
+    const uint32_t limit_ms = static_cast<uint32_t>(minimum_wait_ms) + GRIND_MOTOR_SETTLE_LIMIT_MS;
+    if (controller.wait_for_still_scale(GRIND_MOTOR_SETTLING_TIME_MS, limit_ms,
+                                        controller.stillness_wait_past_limit(), loop_data) != SettleWait::WAITING) {
+        controller.switch_phase(GrindPhase::PULSE_DECISION, loop_data);
     }
 }

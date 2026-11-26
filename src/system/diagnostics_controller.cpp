@@ -22,6 +22,7 @@ void DiagnosticsController::update(HardwareManager* hw_mgr, GrindController* gri
     // Phase 1: Calibration flag and boot diagnostics
     check_load_cell_calibration(sensor);
     check_load_cell_boot_fault(sensor);
+    check_load_cell_signal_range(sensor);
 
     // Phase 5: Add noise monitoring
     check_load_cell_noise(sensor, uptime_ms);
@@ -65,6 +66,16 @@ void DiagnosticsController::check_load_cell_boot_fault(WeightSensor* sensor) {
             set_diagnostic_active(DiagnosticCode::HX711_SAMPLE_RATE_INVALID);
             clear_diagnostic(DiagnosticCode::HX711_NOT_CONNECTED);
             break;
+    }
+}
+
+void DiagnosticsController::check_load_cell_signal_range(WeightSensor* sensor) {
+    if (!sensor) return;
+
+    if (sensor->is_signal_out_of_range()) {
+        set_diagnostic_active(DiagnosticCode::LOAD_CELL_SIGNAL_OUT_OF_RANGE);
+    } else {
+        clear_diagnostic(DiagnosticCode::LOAD_CELL_SIGNAL_OUT_OF_RANGE);
     }
 }
 
@@ -132,6 +143,7 @@ DiagnosticCode DiagnosticsController::get_highest_priority_warning(bool include_
     // Priority order (highest to lowest):
     // 1. HX711_NOT_CONNECTED - load cell hardware missing
     // 2. HX711_SAMPLE_RATE_INVALID - incorrect RATE pin configuration
+    // 2a. LOAD_CELL_SIGNAL_OUT_OF_RANGE - load cell wiring or excitation fault
     // 3. MECHANICAL_INSTABILITY - immediate safety concern
     // 4. LOAD_CELL_NOISY_SUSTAINED - affects grind quality
     // 5. LOAD_CELL_NOT_CALIBRATED - initial setup issue
@@ -141,6 +153,9 @@ DiagnosticCode DiagnosticsController::get_highest_priority_warning(bool include_
     }
     if (include_load_cell && find_diagnostic(DiagnosticCode::HX711_SAMPLE_RATE_INVALID)) {
         return DiagnosticCode::HX711_SAMPLE_RATE_INVALID;
+    }
+    if (include_load_cell && find_diagnostic(DiagnosticCode::LOAD_CELL_SIGNAL_OUT_OF_RANGE)) {
+        return DiagnosticCode::LOAD_CELL_SIGNAL_OUT_OF_RANGE;
     }
     if (find_diagnostic(DiagnosticCode::MECHANICAL_INSTABILITY)) {
         return DiagnosticCode::MECHANICAL_INSTABILITY;
@@ -198,6 +213,8 @@ const char* DiagnosticsController::get_diagnostic_message(DiagnosticCode code) c
             return "Sustained sensor noise detected. Check connections and environment.";
         case DiagnosticCode::MECHANICAL_INSTABILITY:
             return "Mechanical instability detected. Check grinder mounting and connections.";
+        case DiagnosticCode::LOAD_CELL_SIGNAL_OUT_OF_RANGE:
+            return "Load cell signal out of range. Check the load cell wires to the HX711.";
         case DiagnosticCode::NONE:
         default:
             return "";

@@ -244,6 +244,10 @@ void GrindingUIController::handle_grind_button() {
             float target_time_seconds = ui_manager_->profile_controller->get_current_time();
             uint32_t target_time_ms = static_cast<uint32_t>((target_time_seconds * 1000.0f) + 0.5f);
             started = ui_manager_->grind_controller->start_grind(target_weight, target_time_ms, ui_manager_->current_mode);
+            if (started) {
+                // Grinding with a profile makes it the one a restart returns to.
+                ui_manager_->profile_controller->save_selected_profile();
+            }
         }
         if (!started) {
             ui_manager_->show_confirmation(
@@ -706,6 +710,9 @@ void GrindingUIController::enter_ready_state() {
         lv_obj_add_flag(pulse_button_, LV_OBJ_FLAG_HIDDEN);
     }
     ui_manager_->grinding_screen.set_mode(ui_manager_->current_mode);
+    // A tap during the last grind may have switched its view; the next grind
+    // starts with the layout chosen in Grind Settings again.
+    ui_manager_->grinding_screen.restore_saved_layout();
 }
 
 void GrindingUIController::enter_edit_state() {

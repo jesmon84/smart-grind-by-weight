@@ -113,6 +113,69 @@ target_include_directories(result-timer-test PRIVATE
     "${PROJECT_ROOT}/src"
 )
 
+add_executable(panel-refresh-policy-test
+    panel_refresh_policy_test.cpp
+)
+target_include_directories(panel-refresh-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(profile-settle-policy-test
+    profile_settle_policy_test.cpp
+)
+target_include_directories(profile-settle-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(settle-wait-policy-test
+    settle_wait_policy_test.cpp
+)
+target_include_directories(settle-wait-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(vessel-weight-tracker-test
+    vessel_weight_tracker_test.cpp
+)
+target_include_directories(vessel-weight-tracker-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(power-saving-policy-test
+    power_saving_policy_test.cpp
+)
+target_include_directories(power-saving-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(state-stream-policy-test
+    state_stream_policy_test.cpp
+)
+target_include_directories(state-stream-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(radio-rest-policy-test
+    radio_rest_policy_test.cpp
+)
+target_include_directories(radio-rest-policy-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(run-snapshot-test
+    run_snapshot_test.cpp
+)
+target_include_directories(run-snapshot-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
+add_executable(coast-learning-test
+    coast_learning_test.cpp
+)
+target_include_directories(coast-learning-test PRIVATE
+    "${PROJECT_ROOT}/src"
+)
+
 if(MSVC)
     target_compile_options(smart-grind-sim PRIVATE /W4 /permissive-)
 endif()
@@ -148,4 +211,22 @@ if(BUILD_TESTING)
     set_tests_properties(scale_readiness PROPERTIES TIMEOUT 5)
     add_test(NAME result_timer COMMAND result-timer-test)
     set_tests_properties(result_timer PROPERTIES TIMEOUT 5)
+    add_test(NAME panel_refresh_policy COMMAND panel-refresh-policy-test)
+    set_tests_properties(panel_refresh_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME profile_settle_policy COMMAND profile-settle-policy-test)
+    set_tests_properties(profile_settle_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME settle_wait_policy COMMAND settle-wait-policy-test)
+    set_tests_properties(settle_wait_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME vessel_weight_tracker COMMAND vessel-weight-tracker-test)
+    set_tests_properties(vessel_weight_tracker PROPERTIES TIMEOUT 5)
+    add_test(NAME power_saving_policy COMMAND power-saving-policy-test)
+    set_tests_properties(power_saving_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME state_stream_policy COMMAND state-stream-policy-test)
+    set_tests_properties(state_stream_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME radio_rest_policy COMMAND radio-rest-policy-test)
+    set_tests_properties(radio_rest_policy PROPERTIES TIMEOUT 5)
+    add_test(NAME run_snapshot COMMAND run-snapshot-test)
+    set_tests_properties(run_snapshot PROPERTIES TIMEOUT 5)
+    add_test(NAME coast_learning COMMAND coast-learning-test)
+    set_tests_properties(coast_learning PROPERTIES TIMEOUT 5)
 endif()

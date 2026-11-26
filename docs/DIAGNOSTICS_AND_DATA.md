@@ -15,9 +15,15 @@ Generate a comprehensive diagnostic report from your device for troubleshooting 
 For routine checks without opening the grinder, visit `http://smartgrind.local`,
 open **Settings → System & updates**, and refresh or download the recent
 diagnostic log. The latest 4 KiB of boot/runtime messages are retained in RAM,
-so this adds no ongoing flash wear. USB serial is only needed when the firmware
-cannot boot far enough to reconnect to Wi-Fi; the full compile-time diagnostic
-report below remains available through the legacy Bluetooth tooling.
+so this adds no ongoing flash wear. The same section shows the reason for the
+last restart, how many restarts so far were brownouts, the state of the
+display panel's frame signal and how often the panel was reset or refreshed
+and the touch bus recovered; **Connectivity** shows the Wi-Fi signal
+strength. The brownout and panel fault counts are kept across power cycles.
+USB serial is
+only needed when the firmware cannot boot far enough to reconnect to Wi-Fi;
+the full compile-time diagnostic report below remains available through the
+legacy Bluetooth tooling.
 
 ### Report Contents
 

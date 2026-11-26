@@ -10,6 +10,9 @@
 #include "ui/ui_manager.h"
 #include "config/constants.h"
 #include "system/screensaver_settings.h"
+#include "system/reset_reason.h"
+#include "system/health_counters.h"
+#include "system/power_saver.h"
 #include "config/build_info.h"
 #include "bluetooth/manager.h"
 #include "tasks/task_manager.h"
@@ -17,6 +20,7 @@
 #include "tasks/grind_control_task.h"
 #include "tasks/file_io_task.h"
 #include "network/network_manager.h"
+#include "network/radio_rest_policy.h"
 #include "network/provisioning_service.h"
 #include "network/device_web_server.h"
 #include "network/gaggimate_status_client.h"
@@ -85,23 +89,9 @@ void setup() {
     
     // Log reset reason to help diagnose unexpected resets/freeze scenarios
     esp_reset_reason_t rr = esp_reset_reason();
-    const char* rr_str = "UNKNOWN";
-    switch (rr) {
-        case ESP_RST_POWERON: rr_str = "POWERON"; break;
-        case ESP_RST_EXT: rr_str = "EXT (Reset Pin)"; break;
-        case ESP_RST_SW: rr_str = "SW (esp_restart)"; break;
-        case ESP_RST_PANIC: rr_str = "PANIC (Exception)"; break;
-        case ESP_RST_INT_WDT: rr_str = "INT_WDT"; break;
-        case ESP_RST_TASK_WDT: rr_str = "TASK_WDT"; break;
-        case ESP_RST_WDT: rr_str = "WDT"; break;
-        case ESP_RST_DEEPSLEEP: rr_str = "DEEPSLEEP"; break;
-        case ESP_RST_BROWNOUT: rr_str = "BROWNOUT"; break;
-        case ESP_RST_SDIO: rr_str = "SDIO"; break;
-        default: break;
-    }
-    LOG_BLE("[STARTUP] Reset reason: %s (%d)\n", rr_str, rr);
-    
-    
+    LOG_BLE("[STARTUP] Reset reason: %s (%d)\n", reset_reason_name(rr), rr);
+    health_counters.init();
+
     // Early startup heartbeat - helps capture initialization sequence
     LOG_BLE("[STARTUP] Initializing ESP32-S3 Coffee Scale - Build %d - Core1 active\n", BUILD_NUMBER);
     
@@ -212,6 +202,19 @@ void loop() {
     static uint32_t last_uptime_update = 0;
     static uint32_t pending_uptime_minutes = 0;
     uint32_t current_time = millis();
+    // The radio is off while a grind runs, if that is switched on (see
+    // radio_rest_policy.h). A result waiting on the screen is not a grind.
+    // During a firmware upload over Bluetooth it is off whatever the switch
+    // says: that upload needs no Wi-Fi and strains the supply most.
+    static RadioRestSchedule radio_rest;
+    const GrindPhase grind_phase = grind_controller.get_phase();
+    const bool grind_running = grind_phase != GrindPhase::IDLE &&
+                               grind_phase != GrindPhase::COMPLETED &&
+                               grind_phase != GrindPhase::TIMEOUT;
+    const bool bluetooth_upload = bluetooth_manager.is_updating();
+    network_manager.set_radio_rest(radio_rest.update(
+        current_time, network_manager.rest_while_grinding() || bluetooth_upload,
+        grind_running || bluetooth_upload));
     network_manager.update();
     provisioning_service.update();
     // AsyncTCP requires lwIP's TCP/IP task and mutexes to exist. They are only
@@ -249,7 +252,26 @@ void loop() {
         hardware_suspended = false;
         LOG_BLE("[MAIN] Hardware tasks resumed after OTA\n");
     }
-    
+
+    // Keep the display's fault counts where a power cycle does not lose them.
+    // Flash is only written while no grind or firmware update is running.
+    DisplayManager* display = hardware_manager.get_display();
+    health_counters.note_panel_counts(display->get_panel_fault_count(),
+                                      display->get_panel_recovery_count());
+    // Kept where a restart does not clear it, for the record of a brownout.
+    RunSnapshot running;
+    running.uptime_ms = current_time;
+    running.cpu_mhz = static_cast<uint16_t>(power_saver.cpu_mhz());
+    running.grind_phase = static_cast<uint8_t>(grind_phase);
+    running.motor_on = hardware_manager.get_grinder()->is_grinding() ? 1 : 0;
+    running.wifi_state = static_cast<uint8_t>(network_manager.state());
+    running.display_on = display->is_panel_powered_on() ? 1 : 0;
+    running.brightness = display->get_brightness_level();
+    health_counters.note_run_state(running);
+    if (health_counters.has_unsaved_counts() && !ota_active && !grind_controller.is_active()) {
+        health_counters.save_if_changed();
+    }
+
     // UI events are now processed inside the UI render FreeRTOS task
     // to serialize all LVGL updates on a single thread.
     

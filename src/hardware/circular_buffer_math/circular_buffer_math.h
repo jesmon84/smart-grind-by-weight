@@ -62,7 +62,8 @@ private:
     float calculate_standard_deviation(const int32_t* samples, int count) const;
     int32_t get_latest_sample() const;
     int calculate_max_samples_for_window(uint32_t window_ms) const;
-    
+    static int min_samples_for_stillness(uint32_t window_ms);
+
 public:
     CircularBufferMath();
     

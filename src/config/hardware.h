@@ -41,7 +41,10 @@
 #define HW_DISPLAY_D1_PIN 12                                                   // SPI data line 1 (QSPI mode)
 #define HW_DISPLAY_D2_PIN 13                                                   // SPI data line 2 (QSPI mode)
 #define HW_DISPLAY_D3_PIN 14                                                   // SPI data line 3 (QSPI mode)
-#define HW_DISPLAY_RESET_PIN 21                                                // Display reset pin
+#define HW_DISPLAY_RESET_PIN 21                                                // Display reset pin; on the V2 PCB it resets the touch controller as well
+#if HW_DISPLAY_VARIANT_V2
+#define HW_DISPLAY_TE_PIN 45                                                   // V2 PCB only: the panel's frame (tearing effect) signal, one pulse per frame while the panel runs
+#endif
 
 // Load Cell ADC Pins
 #define HW_LOADCELL_DOUT_PIN 3                                                 // HX711 data output pin

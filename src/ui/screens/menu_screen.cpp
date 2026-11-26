@@ -51,6 +51,8 @@ void MenuScreen::create(BluetoothManager* bluetooth, GrindController* grind_ctrl
     scale_tare_button = nullptr;
     scale_item = nullptr;
     network_page = nullptr;
+    wifi_toggle = nullptr;
+    wifi_rest_toggle = nullptr;
     network_status_label = nullptr;
     network_detail_label = nullptr;
     network_qr = nullptr;
@@ -74,6 +76,7 @@ void MenuScreen::create(BluetoothManager* bluetooth, GrindController* grind_ctrl
     coast_ratio_label = nullptr;
     motor_latency_slider = nullptr;
     motor_latency_label = nullptr;
+    shaky_bench_toggle = nullptr;
     auto_start_threshold_slider = nullptr;
     auto_start_threshold_label = nullptr;
     display_off_toggle = nullptr;
@@ -115,7 +118,10 @@ void MenuScreen::create_menu_ui() {
     lv_obj_t* header_label = lv_obj_get_child(header, -1);
     if (header_label) {
         lv_obj_set_style_text_align(header_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(header_label, &lv_font_montserrat_36, 0);
+        // The header keeps the height of the 36 px title font; the titles
+        // themselves are smaller, so that the longest ("Grind Settings")
+        // clears the back arrow.
+        lv_obj_set_style_text_font(header_label, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(header_label, lv_color_hex(THEME_COLOR_TEXT_SECONDARY), 0);
         lv_obj_set_style_min_height(header_label, title_target_height, 0);
         lv_obj_set_style_pad_top(header_label, title_padding, 0);
@@ -133,10 +139,13 @@ void MenuScreen::create_menu_ui() {
     // Force layout update to get proper chevron dimensions
     lv_obj_update_layout(header);
 
-    // Create spacer using chevron's actual size
-    // Spacer is used to center name of the page name in the header
+    // The spacer balances the back button so that the page name sits near
+    // the middle of the header. It is a little narrower than the button,
+    // which moves the longest name clear of the back arrow.
+    constexpr int32_t kTitleShiftPx = 12;
     lv_obj_t* spacer = lv_obj_create(header);
-    lv_obj_set_size(spacer, lv_obj_get_width(back_chevron), lv_obj_get_height(back_chevron));
+    lv_obj_set_size(spacer, lv_obj_get_width(back_chevron) - kTitleShiftPx,
+                    lv_obj_get_height(back_chevron));
     lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(spacer, 0, 0);
     lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
@@ -316,6 +325,7 @@ void MenuScreen::create_bluetooth_page(lv_obj_t* parent) {
     lv_label_set_text(ble_timer_label, "");
     lv_obj_set_style_text_font(ble_timer_label, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(ble_timer_label, lv_color_hex(THEME_COLOR_WARNING), 0);
+    lv_obj_set_style_margin_top(ble_timer_label, 6, 0);
     lv_obj_clear_flag(ble_timer_label, LV_OBJ_FLAG_SCROLLABLE);
 
     // Register events for the toggles (done here because widgets are created lazily)
@@ -349,6 +359,20 @@ void MenuScreen::create_network_page(lv_obj_t* parent) {
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_pad_row(parent, 8, 0);
+
+    create_toggle_row(parent, "Enabled", &wifi_toggle);
+    create_description_label(parent, "Pause Wi-Fi while grinding to spare the power supply.");
+    create_toggle_row(parent, "Pause", &wifi_rest_toggle);
+    using ET = EventBridgeLVGL::EventType;
+    if (wifi_toggle) {
+        lv_obj_add_event_cb(wifi_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
+                           reinterpret_cast<void*>(static_cast<intptr_t>(ET::WIFI_TOGGLE)));
+    }
+    if (wifi_rest_toggle) {
+        lv_obj_add_event_cb(wifi_rest_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
+                           reinterpret_cast<void*>(static_cast<intptr_t>(ET::WIFI_REST_TOGGLE)));
+    }
 
     network_status_label = lv_label_create(parent);
     lv_obj_set_style_text_font(network_status_label, &lv_font_montserrat_24, 0);
@@ -392,13 +416,30 @@ void MenuScreen::update_network_status() {
     if (!network_status_label || !network_detail_label || !network_qr ||
         !network_update_label || !network_update_button) return;
 
+    // The switches follow the stored choices, which the web page or a
+    // brownout restart can change as well.
+    const auto show_switch = [](lv_obj_t* toggle, bool on) {
+        if (!toggle || lv_obj_has_state(toggle, LV_STATE_CHECKED) == on) return;
+        if (on) {
+            lv_obj_add_state(toggle, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(toggle, LV_STATE_CHECKED);
+        }
+    };
+    show_switch(wifi_toggle, network_manager.wants_enabled());
+    show_switch(wifi_rest_toggle, network_manager.rest_while_grinding());
+
     String status;
     String detail;
     String qr_payload;
     switch (network_manager.state()) {
         case NetworkState::WIFI_DISABLED:
-            status = "Wi-Fi disabled";
-            detail = "Wi-Fi can be enabled after setup support is complete.";
+            status = "Wi-Fi off";
+            detail = "Switch it on for the web page, Home Assistant and updates.";
+            break;
+        case NetworkState::WIFI_RESTING:
+            status = "Paused";
+            detail = "Wi-Fi comes back after the grind.";
             break;
         case NetworkState::WIFI_NO_CREDENTIALS:
         case NetworkState::WIFI_SETUP_REQUIRED:
@@ -418,10 +459,14 @@ void MenuScreen::update_network_status() {
                 detail = network_manager.network_name() + "\nhttp://" + network_manager.hostname() + ".local\n" + network_manager.ip_address();
             }
             break;
-        case NetworkState::WIFI_RETRY_WAIT:
-            status = "Connection lost";
-            detail = "Will retry automatically.";
+        case NetworkState::WIFI_RETRY_WAIT: {
+            // A failed first join also waits here before its next attempt.
+            const String join_failure = network_manager.join_failure_summary();
+            status = join_failure.isEmpty() ? "Connection lost" : "Retrying";
+            detail = join_failure.isEmpty() ? String() : join_failure + "\n";
+            detail += "Will retry automatically.";
             break;
+        }
         case NetworkState::WIFI_SETUP_AP: {
             status = "Wi-Fi setup";
             const String& ssid = provisioning_service.access_point_ssid();
@@ -459,7 +504,7 @@ void MenuScreen::update_network_status() {
 
     String update_text;
     bool show_update_button = false;
-    if (network_manager.state() == NetworkState::WIFI_CONNECTED) {
+    if (network_manager.state() == NetworkState::WIFI_CONNECTED && !device_web_server.is_ota_active()) {
         switch (device_web_server.firmware_update_state()) {
             case FirmwareUpdateState::UNKNOWN:
                 update_text = "Update check will run while idle.";
@@ -525,12 +570,15 @@ void MenuScreen::create_display_page(lv_obj_t* parent) {
                            reinterpret_cast<void*>(static_cast<intptr_t>(ET::BRIGHTNESS_SCREENSAVER_SLIDER_RELEASED)));
     }
 
-    // Custom screensaver image toggles
+    // Custom screensaver image toggles. A switch row has room for a label of
+    // about 140 px beside the switch, so the labels are short and the
+    // sentence above says the rest.
     create_separator(parent, "Custom Image");
-    create_description_label(parent, "Show uploaded image on startup or when display dims.");
+    create_description_label(parent, "Show the uploaded image at startup or while the grinder is idle.");
     create_toggle_row(parent, "Startup", &screensaver_startup_toggle);
-    create_toggle_row(parent, "Idle Screensaver", &screensaver_sleep_toggle);
-    create_toggle_row(parent, "Turn Display Off", &display_off_toggle);
+    create_toggle_row(parent, "Idle", &screensaver_sleep_toggle);
+    create_description_label(parent, "Turn the display off after a long idle time.");
+    create_toggle_row(parent, "Turn off", &display_off_toggle);
 
     if (screensaver_startup_toggle) {
         lv_obj_add_event_cb(screensaver_startup_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
@@ -575,7 +623,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_AUTO);
 
     // Mode Selection separator/label
-    create_separator(parent, "Mode Selection");
+    create_separator(parent, "Mode");
 
     // Radio button group for grind mode selection at top
     const char* grind_modes[] = {"Weight", "Time"};
@@ -585,7 +633,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
         2,
         LV_FLEX_FLOW_ROW,
         0,  // Weight initially selected
-        135, 100,  // Width, Height
+        -1, 100,  // Equal widths, height
         grind_mode_callback,
         this
     );
@@ -604,7 +652,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
 
     // Grind screen layout; indexes match GrindScreenLayout
     create_separator(parent, "Grind Screen");
-    create_description_label(parent, "Choose what the screen shows while grinding. You can also tap the screen during a grind to switch.");
+    create_description_label(parent, "Choose what the screen shows while grinding. Tapping the screen during a grind switches it for that grind only.");
     const char* grind_screen_layouts[] = {"Arc", "Chart", "Circle"};
     grind_screen_radio_group = create_radio_button_group(
         parent,
@@ -630,7 +678,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
     create_toggle_row(parent, "Start", &auto_start_toggle);
     const uint32_t auto_start_min = static_cast<uint32_t>(USER_AUTO_GRIND_TRIGGER_MIN_G * kAutoStartThresholdSliderScale + 0.5f);
     const uint32_t auto_start_max = static_cast<uint32_t>(USER_AUTO_GRIND_TRIGGER_MAX_G * kAutoStartThresholdSliderScale + 0.5f);
-    create_slider_row(parent, "Cup threshold", &auto_start_threshold_label,
+    create_slider_row(parent, "Threshold", &auto_start_threshold_label,
                       &auto_start_threshold_slider, lv_color_hex(THEME_COLOR_ACCENT),
                       auto_start_min, auto_start_max);
     create_description_label(parent, "Use a value below the empty cup or portafilter weight to prevent accidental starts.");
@@ -639,7 +687,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
 
     // Grinder Purging section
     create_separator(parent, "Purging");
-    create_description_label(parent, "Decide what do do with the grinded coffee after the grinder is primed.");
+    create_description_label(parent, "Decide what to do with the ground coffee after the grinder is primed.");
 
     // Radio button group for grinder purge mode (Keep/Remove)
     const char* grinder_purge_modes[] = {"Keep", "Remove"};
@@ -649,7 +697,7 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
         2,
         LV_FLEX_FLOW_ROW,
         1,  // Purge initially selected (index 1)
-        135, 100,  // Width, Height
+        -1, 100,  // Equal widths, height
         grinder_purge_mode_callback,
         this
     );
@@ -669,24 +717,31 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
                      lv_color_hex(THEME_COLOR_ACCENT), 0, 8);  // 9 positions (0-8)
 
     // Motor response section
-    create_separator(parent, "Motor Response");
+    create_separator(parent, "Motor");
     create_description_label(parent, "Minimum run time before grounds begin to flow. Pulse Tune updates this automatically.");
 
-    create_slider_row(parent, "Motor latency", &motor_latency_label, &motor_latency_slider,
+    create_slider_row(parent, "Latency", &motor_latency_label, &motor_latency_slider,
                       lv_color_hex(THEME_COLOR_ACCENT),
                       static_cast<uint32_t>(GRIND_AUTOTUNE_LATENCY_MIN_MS),
                       static_cast<uint32_t>(GRIND_AUTOTUNE_LATENCY_MAX_MS));
     create_description_label(parent, "Adjust manually only when Pulse Tune cannot complete reliably.");
 
-    // Coast Compensation section
-    create_separator(parent, "Coast Compensation");
-    create_description_label(parent, "How much coast the system expects after motor stop. Higher values reduce overshoot.");
+    // Coast compensation section
+    create_separator(parent, "Coast");
+    create_description_label(parent, "The grinder learns what lands after the motor stops. Until a first grind has shown it, higher values stop earlier.");
 
     // Slider for coast ratio (0.70 to 1.50 in 0.05 steps)
     const uint32_t coast_slider_min = static_cast<uint32_t>(GRIND_LATENCY_TO_COAST_RATIO_MIN * kCoastRatioSliderScale + 0.5f);
     const uint32_t coast_slider_max = static_cast<uint32_t>(GRIND_LATENCY_TO_COAST_RATIO_MAX * kCoastRatioSliderScale + 0.5f);
-    create_slider_row(parent, "Coast Ratio", &coast_ratio_label, &coast_ratio_slider,
+    create_slider_row(parent, "Ratio", &coast_ratio_label, &coast_ratio_slider,
                      lv_color_hex(THEME_COLOR_ACCENT), coast_slider_min, coast_slider_max);
+
+    // Shaky-bench handling (see settle_wait_policy.h). The warning is part of
+    // the description: with it on, a hand on the portafilter can be weighed
+    // as coffee.
+    create_separator(parent, "Shaky Bench");
+    create_description_label(parent, "For a bench that vibrates, such as beside a 3D printer. Keep your hands off the portafilter while it grinds.");
+    create_toggle_row(parent, "Enabled", &shaky_bench_toggle);
 
     // Register events for the toggles (done here because widgets are created lazily)
     using ET = EventBridgeLVGL::EventType;
@@ -742,6 +797,10 @@ void MenuScreen::create_grind_mode_page(lv_obj_t* parent) {
         lv_obj_add_event_cb(motor_latency_slider, EventBridgeLVGL::dispatch_event, LV_EVENT_RELEASED,
                            reinterpret_cast<void*>(static_cast<intptr_t>(ET::MOTOR_LATENCY_SLIDER_RELEASED)));
     }
+    if (shaky_bench_toggle) {
+        lv_obj_add_event_cb(shaky_bench_toggle, EventBridgeLVGL::dispatch_event, LV_EVENT_VALUE_CHANGED,
+                           reinterpret_cast<void*>(static_cast<intptr_t>(ET::SHAKY_BENCH_TOGGLE)));
+    }
 }
 
 void MenuScreen::create_scale_page(lv_obj_t* parent) {
@@ -750,6 +809,7 @@ void MenuScreen::create_scale_page(lv_obj_t* parent) {
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(parent, 24, 0);
     lv_obj_set_style_pad_gap(parent, 28, 0);
+    lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_bg_opa(parent, LV_OPA_TRANSP, 0);
 
@@ -830,7 +890,7 @@ void MenuScreen::create_stats_page(lv_obj_t* parent) {
 
     create_description_label(parent, "Lifetime totals for the grinder.");
 
-    create_separator(parent, "Lifetime Statistics");
+    create_separator(parent);
     create_data_label(parent, "Total Grinds:", &stat_total_grinds_label, true);
     create_data_label(parent, "Shots (S/D/C):", &stat_shots_label, true);
     create_data_label(parent, "Motor Runtime:", &stat_motor_runtime_label, true);
@@ -861,8 +921,8 @@ void MenuScreen::create_diagnostics_page(lv_obj_t* parent) {
     lv_obj_set_scroll_dir(parent, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_AUTO);
 
-    // Load Cell Status separator
-    create_separator(parent, "Load Cell Status");
+    // Load cell status separator
+    create_separator(parent, "Load Cell");
 
     // Status indicator
     create_data_label(parent, "Status:", &diag_status_label);
@@ -881,7 +941,8 @@ void MenuScreen::create_diagnostics_page(lv_obj_t* parent) {
     lv_obj_set_width(diag_info_label, 260);
     lv_obj_add_flag(diag_info_label, LV_OBJ_FLAG_HIDDEN); // Hidden by default
 
-    diag_reset_button = create_button(parent, "Reset Diagnostics", lv_color_hex(THEME_COLOR_WARNING));
+    diag_reset_button = create_button(parent, "Clear Warnings", lv_color_hex(THEME_COLOR_WARNING));
+    lv_obj_set_style_margin_top(diag_reset_button, 10, 0);
     lv_obj_set_style_margin_bottom(diag_reset_button, 10, 0);
 
     // Noise Floor separator
@@ -901,8 +962,8 @@ void MenuScreen::create_diagnostics_page(lv_obj_t* parent) {
     lv_label_set_long_mode(cal_info, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(cal_info, 260);
 
-    // Motor Response separator
-    create_separator(parent, "Motor Response");
+    // Motor response separator
+    create_separator(parent, "Motor");
 
     // Motor latency
     create_data_label(parent, "Motor Latency:", &diag_motor_latency_label, true);
@@ -1060,7 +1121,7 @@ void MenuScreen::update_ble_status() {
         unsigned long remaining_ms = bluetooth_manager->get_bluetooth_timeout_remaining_ms();
         unsigned long remaining_min = remaining_ms / (60 * 1000);
         char timer_text[64];
-        snprintf(timer_text, sizeof(timer_text), "Auto-disable in: %lu min", remaining_min);
+        snprintf(timer_text, sizeof(timer_text), "Turns off in %lu min", remaining_min);
         lv_label_set_text(ble_timer_label, timer_text);
         lv_obj_clear_flag(ble_timer_label, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -1222,7 +1283,7 @@ void MenuScreen::update_coast_ratio_label(float ratio) {
     if (coast_ratio_label) {
         char buffer[24];
         int percent = static_cast<int>(ratio * 100.0f + 0.5f);
-        snprintf(buffer, sizeof(buffer), "Coast Ratio: %d%%", percent);
+        snprintf(buffer, sizeof(buffer), "Ratio: %d%%", percent);
         lv_label_set_text(coast_ratio_label, buffer);
     }
 }
@@ -1233,7 +1294,7 @@ void MenuScreen::update_motor_latency_label(float latency_ms) {
                                      GRIND_AUTOTUNE_LATENCY_MIN_MS,
                                      GRIND_AUTOTUNE_LATENCY_MAX_MS);
     char buffer[28];
-    snprintf(buffer, sizeof(buffer), "Motor latency: %.0fms", clamped);
+    snprintf(buffer, sizeof(buffer), "Latency: %.0fms", clamped);
     lv_label_set_text(motor_latency_label, buffer);
 }
 
@@ -1254,7 +1315,7 @@ void MenuScreen::update_auto_start_threshold_label(float threshold_g) {
                                      USER_AUTO_GRIND_TRIGGER_MIN_G,
                                      USER_AUTO_GRIND_TRIGGER_MAX_G);
     char buffer[28];
-    snprintf(buffer, sizeof(buffer), "Cup threshold: %.0fg", clamped);
+    snprintf(buffer, sizeof(buffer), "Threshold: %.0fg", clamped);
     lv_label_set_text(auto_start_threshold_label, buffer);
 }
 
@@ -1386,6 +1447,9 @@ void MenuScreen::update_logging_toggle() {
 lv_obj_t* MenuScreen::create_menu_item(lv_obj_t* parent, const char* text) {
     lv_obj_t* cont = lv_menu_cont_create(parent);
     style_as_button(cont);
+    // Less side padding than other rows: "Grind Settings" and its arrow need
+    // the width.
+    lv_obj_set_style_pad_hor(cont, 14, 0);
     lv_obj_set_style_margin_bottom(cont, 10, 0);
 
     // Set layout
@@ -1436,8 +1500,11 @@ lv_obj_t* MenuScreen::create_slider_row(lv_obj_t* parent, const char* text, lv_o
     lv_obj_set_style_pad_gap(row_container, 14, 0);
     lv_obj_set_style_pad_all(row_container, 20, 0);
 
+    // The caption carries the value as well ("Threshold: 1000g"), on one
+    // line of the row's 220 px, which the 28 px row font does not allow.
     *label = lv_label_create(row_container);
     lv_label_set_text(*label, text);
+    lv_obj_set_style_text_font(*label, &lv_font_montserrat_24, 0);
 
     *slider = lv_slider_create(row_container);
     lv_obj_set_size(*slider, 220, 40);
@@ -1528,10 +1595,10 @@ void MenuScreen::update_grind_mode_toggles() {
         radio_button_group_set_selection(grind_mode_radio_group, mode_index);
     }
 
-    // Tapping the screen during a grind may have changed the layout
+    // The stored choice, not a view a tap switched to for one grind
     if (grind_screen_radio_group && grinding_screen) {
         radio_button_group_set_selection(grind_screen_radio_group,
-                                         static_cast<int>(grinding_screen->get_layout()));
+                                         static_cast<int>(grinding_screen->get_saved_layout()));
     }
 
     if (result_hold_toggle) {
@@ -1657,4 +1724,18 @@ void MenuScreen::update_grind_mode_toggles() {
         lv_slider_set_value(motor_latency_slider, slider_value, LV_ANIM_OFF);
     }
     update_motor_latency_label(motor_latency_ms);
+
+    set_shaky_bench_toggle(grind_controller ? grind_controller->shaky_bench_enabled()
+                                            : GRIND_SHAKY_BENCH_DEFAULT != 0);
+}
+
+void MenuScreen::set_shaky_bench_toggle(bool enabled) {
+    if (!shaky_bench_toggle) {
+        return;
+    }
+    if (enabled) {
+        lv_obj_add_state(shaky_bench_toggle, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(shaky_bench_toggle, LV_STATE_CHECKED);
+    }
 }

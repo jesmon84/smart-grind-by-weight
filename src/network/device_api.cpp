@@ -109,6 +109,13 @@ const char* api_phase_name(const GrindController& controller) {
     }
     return "IDLE";
 }
+
+// True from the start of a grind until its result is shown. The finished
+// screen can stay up for a long time and changes slowly, like the idle state.
+bool grind_in_progress(GrindPhase phase) {
+    return phase != GrindPhase::IDLE && phase != GrindPhase::COMPLETED &&
+           phase != GrindPhase::TIMEOUT;
+}
 }
 
 void DeviceApi::init(AsyncWebServer* server, HardwareManager* hardware,
@@ -147,10 +154,32 @@ void DeviceApi::update() {
     if (settings_cache_dirty_.exchange(false)) refresh_settings_cache();
     websocket_.cleanupClients(MAX_CLIENTS);
     const uint32_t now = millis();
-    if (now - last_publish_ms_ < PUBLISH_INTERVAL_MS) return;
-    last_publish_ms_ = now;
+    if (now - last_publish_check_ms_ < ACTIVE_STATE_INTERVAL_MS) return;
+    last_publish_check_ms_ = now;
 
-    const String message = build_state_message();
+    // Reading the state takes the controller lock, so do it only for someone.
+    if (!has_clients()) return;
+    // A grind is followed closely, and its start and end are sent at once. An
+    // idle grinder is looked at at the slower idle rate, and a message goes
+    // out only for a change or as a keep-alive (see state_stream_policy.h).
+    const GrindPhase phase = grind_controller_->get_phase();
+    const bool in_progress = grind_in_progress(phase);
+    const bool phase_changed = phase != last_published_phase_;
+    if (!in_progress && !phase_changed && now - last_idle_check_ms_ < IDLE_STATE_INTERVAL_MS) {
+        return;
+    }
+    last_idle_check_ms_ = now;
+
+    const LiveState state = capture_live_state();
+    if (!state_message_due(now - last_publish_ms_, in_progress, phase_changed,
+                           live_state_changed(last_sent_state_, state))) {
+        return;
+    }
+    last_publish_ms_ = now;
+    last_published_phase_ = phase;
+    last_sent_state_ = state;
+
+    const String message = format_state_message(state);
     for (size_t index = 0; index < MAX_CLIENTS; ++index) {
         auto& slot = client_ids_[index];
         const uint32_t id = slot.load();
@@ -179,6 +208,13 @@ void DeviceApi::update() {
         backpressure_skips_[index].store(0);
         websocket_.text(id, message);
     }
+}
+
+bool DeviceApi::has_clients() const {
+    for (const auto& slot : client_ids_) {
+        if (slot.load() != 0) return true;
+    }
+    return false;
 }
 
 bool DeviceApi::process_commands() {
@@ -860,7 +896,8 @@ void DeviceApi::send_ack(const Command& command, const char* action, bool accept
              action, accepted, reason);
 }
 
-String DeviceApi::build_state_message() {
+// What a client is shown, read in one go under the controller lock.
+LiveState DeviceApi::capture_live_state() {
     // Capture profile data before taking controller access; profile persistence
     // must not hold up the motor control loop through a network reader.
     const auto profile = profile_controller_->snapshot();
@@ -868,19 +905,34 @@ String DeviceApi::build_state_message() {
     WeightSensor* sensor = hardware_->get_weight_sensor();
     Grinder* grinder = hardware_->get_grinder();
     const bool idle = grind_controller_->get_phase() == GrindPhase::IDLE;
-    const GrindMode mode = idle ? profile.mode : grind_controller_->get_mode();
-    const float target_weight = idle ? profile.profiles[profile.current_profile].weight
-                                     : grind_controller_->get_target_weight();
-    const uint32_t target_time_ms = idle
+
+    LiveState state;
+    state.phase = api_phase_name(*grind_controller_);
+    state.active = grind_controller_->is_active();
+    state.mode = static_cast<uint8_t>(idle ? profile.mode : grind_controller_->get_mode());
+    state.profile = idle ? profile.current_profile
+                         : grind_controller_->get_session_descriptor().profile_id;
+    state.progress = grind_controller_->get_current_progress_percent();
+    state.target_weight = idle ? profile.profiles[profile.current_profile].weight
+                               : grind_controller_->get_target_weight();
+    state.target_time_ms = idle
         ? static_cast<uint32_t>(profile.profiles[profile.current_profile].time_seconds * 1000.0f)
         : grind_controller_->get_target_time_ms();
     // The web metric is for a human-readable live display, so mirror the
     // steadier filtered value used by the on-device UI. The high-frequency raw
     // control samples remain available in the saved session trace.
-    const float weight = sensor ? sensor->get_display_weight() : 0.0f;
-    const float flow = sensor ? sensor->get_flow_rate() : 0.0f;
-    const bool motor_running = grinder && grinder->is_grinding();
+    state.weight = sensor ? sensor->get_display_weight() : 0.0f;
+    state.flow = sensor ? sensor->get_flow_rate() : 0.0f;
+    state.motor_running = grinder && grinder->is_grinding();
+    return state;
+}
 
+String DeviceApi::build_state_message() {
+    return format_state_message(capture_live_state());
+}
+
+String DeviceApi::format_state_message(const LiveState& state) {
+    const GrindMode mode = static_cast<GrindMode>(state.mode);
     char message[640];
     snprintf(message, sizeof(message),
              "{\"api\":\"v1\",\"type\":\"state\",\"seq\":%lu,\"timestamp_ms\":%lu,"
@@ -889,14 +941,14 @@ String DeviceApi::build_state_message() {
              "\"scale\":{\"weight\":%.2f,\"flow\":%.2f},"
              "\"motor\":{\"running\":%s},\"system\":{\"free_heap\":%u}}",
              static_cast<unsigned long>(sequence_.fetch_add(1) + 1), static_cast<unsigned long>(millis()),
-             grind_controller_->is_active() ? "true" : "false",
-             api_phase_name(*grind_controller_),
+             state.active ? "true" : "false",
+             state.phase,
              mode == GrindMode::TIME ? "time" : mode == GrindMode::MANUAL ? "manual" : "weight",
-             idle ? profile.current_profile : grind_controller_->get_session_descriptor().profile_id,
-             grind_controller_->get_current_progress_percent(),
-             target_weight,
-             static_cast<unsigned long>(target_time_ms),
-             weight, flow, motor_running ? "true" : "false",
+             state.profile,
+             state.progress,
+             state.target_weight,
+             static_cast<unsigned long>(state.target_time_ms),
+             state.weight, state.flow, state.motor_running ? "true" : "false",
              static_cast<unsigned int>(ESP.getFreeHeap()));
     return String(message);
 }

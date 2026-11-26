@@ -4,6 +4,7 @@
 
 - [Motor Does Not Start](#motor-does-not-start)
 - [Display Stays Black After Flashing (Waveshare 1.64 V2)](#display-stays-black-after-flashing-waveshare-164-v2)
+- [Display Goes Black While the Grinder Keeps Working](#display-goes-black-while-the-grinder-keeps-working)
 - [Wi-Fi Setup Does Not Connect](#wi-fi-setup-does-not-connect)
 - [HX711 Not Detected / Wrong Sample Rate](#hx711-not-detected--wrong-sample-rate)
 - [Suspected HX711 or Load Cell Damage](#suspected-hx711-or-load-cell-damage)
@@ -45,6 +46,53 @@ For a complete V2 installation, wire HX711 SCK to GPIO 1 and the grinder motor-c
 Do not change only the chip-select pin in a V1 build. Hardware validation showed that an Arduino_GFX SH8601 attempt remained black; the working V2 target uses Waveshare's native Espressif `esp_lcd` SH8601 driver and initialization sequence.
 
 If using the Web Flasher, select **Newer SH8601 (V2 firmware; may say Rev1.1)** for this generation. Do not select the original CO5300 image merely because the PCB says `Rev1.1`.
+
+---
+
+## Display Goes Black While the Grinder Keeps Working
+
+**Applies to:** V2 boards whose display worked after flashing.
+
+### Symptoms
+- The screen goes black during or just after a grind, or while the web page is in use.
+- The grinder carries on: a running grind finishes and the web page still answers.
+- Or the grinder restarts in the middle of a grind, and the web page then shows `BROWNOUT` as the reason for the last restart.
+- Switching the grinder off and on brings the screen back. A restart without cutting power does not.
+
+### Cause
+The AMOLED panel needs at least 2.7 V on its supply, and the ESP32 keeps running at a lower voltage than that. When the supply sags, the panel therefore goes dark while everything else carries on. Where it sags far enough to restart the ESP32 as well, the web page shows `BROWNOUT` as the reason for the last restart.
+
+The Eureka control board feeds the Waveshare board from a small 5 V regulator (78L05A) with less than 100 mA to spare (see the [power board notes](eureka-specialita-reverse-engineering.md)). The board draws about that with Wi-Fi on, and more while the radio transmits, while a web page is open and above all during a firmware upload. The 1000 µF capacitor covers short transmissions only. A weak Wi-Fi signal makes them long: the radio sends slowly, at full power, and repeats what was not received.
+
+A panel that has gone dark this way does not come back by itself. In the cases examined, a reset of the panel and a restart of the grinder both left it dark; switching the grinder off and on brought it back.
+
+### What the Firmware Does
+The firmware cannot give the panel voltage. It notices the fault, reports it, and brings back a panel that has only lost its setup.
+- **Follows the panel's frame signal**, so it knows when the panel has stopped. **Settings → System & updates** on the web page shows the state of the signal and counts the faults.
+- **Resends the panel's setup** every three seconds and when the screen is touched. A healthy panel shows no change.
+- **Resets the panel while the display is on** when its frame signal has stopped and the resend did not bring it back. This blanks the screen for about a quarter of a second, and waits until nobody has touched the screen for a second and a half, because the same line resets the touch controller. A screen that shows a picture is never reset as a precaution.
+- **Sets the panel up afresh each time the display wakes from off.** Switching the display off puts the panel to sleep and resets it, and waking sets it up from scratch, as at power-on. None of this shows on the screen. It needs **Menu → Display → Turn off** enabled (or the same setting on the web page), which it is not by default.
+- **Resets the touch controller's bus** if it stops answering.
+- **Pauses Wi-Fi while grinding**, if **Menu → Wi-Fi → Pause** is on. The radio is off from the start of a grind until about 15 seconds after it. The switch turns itself on once a grinder has restarted on a brownout, until you choose otherwise.
+- **Records what was running at a brownout restart.** **Last restart** on the web page shows it: whether a grind was running, whether the motor was on and what Wi-Fi was doing.
+- **Draws less power when it can**: the update screen is dimmed during a firmware upload, Wi-Fi pauses and the processor slows while Bluetooth firmware data arrives, the processor runs at a third of its speed while the display is dimmed or off, the online update check waits for a quiet moment, and an idle grinder sends an open web page far fewer messages.
+
+### If the Screen Is Black Now
+Switch the grinder off, wait ten seconds, and switch it on again.
+
+**Reset display** under **Settings → System & updates** on the web page (`http://smartgrind.local`) resets the panel without a power cycle. It helps a panel that has lost its setup, not one whose supply is too low. It is refused while the display is switched off after a long idle time.
+
+Do not tap a black screen to find out whether it responds: the controls under your finger still work.
+
+### If It Happens Often
+1. Look at **Settings → System & updates**. **Last restart** shows the reason for the last restart and how many restarts so far were brownouts. **Display** shows the state of the frame signal, how often the panel was reset while the display was on and how often the frame signal was lost. **Connectivity → Signal** shows the Wi-Fi signal. Brownout restarts, or a frame signal that is lost, point at the supply.
+2. Switch **Menu → Wi-Fi → Pause** on if the grinder restarts or goes black during grinds. If that is not enough, switch **Enabled** off there and only switch Wi-Fi on when you want the web page or an update: without Wi-Fi the board draws about what the original firmware does.
+3. Measure the voltage between the board's 5 V and ground pins while the grinder is on and a web page is open. Clearly under 4.75 V means the regulator is overloaded. The lasting cure is a 5 V supply that can deliver 500 mA or more.
+4. Check that the 1000 µF capacitor from the [installation guide](HARDWARE_INSTALLATION.md) is fitted across 5 V and ground, close to the board.
+5. Improve the Wi-Fi signal at the grinder if it is weaker than about -75 dBm. That shortens every transmission.
+6. Close web pages you are not using. A page in a hidden tab already pauses its connection.
+7. Enable **Menu → Display → Turn off** with a short extra delay. The panel is then asleep, and draws next to nothing, whenever the grinder is idle.
+8. Expect a firmware upload to be the heaviest load of all. If the screen is black after one, switch the grinder off and on.
 
 ---
 
@@ -271,37 +319,108 @@ If you want to try a less aggressive approach first:
 (older firmware: "Err: neg wt") even though the cup or portafilter is still in
 place.
 
-The firmware records the vessel weight immediately before the grind starts. It
-only treats a drop as removal when the reading falls by about 90% of that
-vessel weight and stays there across several samples, so pushing a portafilter
-up in its holder or a brief negative spike does not stop the grind.
+The firmware works out the vessel weight as the grind starts. It only treats a
+drop as removal when the reading falls by about 90% of that vessel weight and
+stays there across several samples, so pushing a portafilter up in its holder
+or a brief negative spike does not stop the grind.
 
 If the error still occurs, download the diagnostic log from the grinder web UI
 and include the vessel reference, removal threshold and reported weight in a
 GitHub issue.
 
+### Portafilter lifted off, but the grind carried on
+
+The check needs to know what the cup or portafilter weighs. On a scale that
+was zeroed empty, that is what the scale reads as the grind starts. Every
+weight grind zeroes the scale with the portafilter on, though, so the
+firmware carries the weight forward from one grind's zero to the next. Where
+neither tells it, it falls back on the level the scale rests at when empty.
+
+That leaves one case without a weight: **the grinder was switched on with the
+portafilter on the scale**, and it has not been lifted off since. Lift it off
+for a second; every grind after that is covered. If a tray or holder that
+normally sits on the scale was off at the time, also switch the grinder off
+and on once with the scale as you normally leave it.
+
+The diagnostic log shows what was used for each grind: `[SCALE] Vessel
+reference:` with the weight, where it came from and the removal threshold, or
+`[SCALE] No vessel reference` when the check was off.
+
 ---
 
 ## Grind Timeout Screen
 
-**Applies to:** Grinder timing out during operation, showing timeout screen after 30 seconds.
+**Applies to:** A grind stopping after 60 seconds with **TIMEOUT** and "Target
+not reached" (older firmware: "Timeout:" followed by four letters such as
+"PULS" or "PRED").
 
 ### Symptoms
-- Grinder reaches timeout screen during grinding cycle
-- Long taring process (>10 seconds)
-- Unstable weight readings
+- The grind stops with the timeout screen before the target weight is reached
+- Grinds take much longer than usual
+- Long taring process, unstable weight readings
 
 ### Root Cause
-Extended taring due to load cell noise prevents grinding from completing within 30-second limit.
+A weight grind has 60 seconds to reach its target. It runs out of time when
+no coffee, or too little, reaches the scale: an empty hopper, beans bridging
+above the burrs, or a target too large for the grinder's flow rate.
+
+A grind also runs out of time when the scale never reads still. It waits for
+a still reading before it tares, before each correction and before it reports
+the result, so it can hang with the coffee already in the basket (older
+firmware: "Timeout:PULS"). A bench that vibrates, for example with a 3D
+printer on it, a hand on the portafilter or a noisy load cell causes this.
+The diagnostic log then has `[SCALE] Not still within ... waiting for a still
+reading`, and the screen says "Could not tare" when the wait was for the
+zero.
+
+### Shaky-bench handling
+
+For a grinder that has to stand on a vibrating bench, switch on **Menu →
+Grind Settings → Shaky Bench → Enabled**. It applies from the next grind and
+is off as shipped. A firmware built with
+`PLATFORMIO_BUILD_FLAGS="-DGRIND_SHAKY_BENCH_DEFAULT=1"` switches it on for a
+grinder where it has never been set, and stores that, so it stays on after
+an update to a standard release.
+
+The diagnostic log then has `[SCALE] Shaky-bench handling is on` at the start
+of every grind, and:
+
+- The waits after taring, after the prime and after the motor stops end after
+  a few seconds (`carrying on` in the log).
+- A grind takes its bench for a shaking one when the scale came to rest
+  neither after taring nor soon after the prime. Its corrections and its
+  result then use the average of the last two seconds of readings once they
+  have waited 2.5 seconds (`using the 2.0s average`). Such a grind finishes,
+  only more slowly.
+- An average is used only while the readings look like one weight being
+  shaken. Otherwise the log has `no steady average to use, waiting`: a hand
+  was on the portafilter, grounds were still falling, or the bench shakes
+  harder than the firmware allows for. For the last case, raise
+  `GRIND_UNSTEADY_SCATTER_LIMIT_G` in `src/config/grind_control.h`.
+- A grind that did not take its bench for a shaking one waits for a still
+  reading as it would without the handling (`waiting for a still reading`).
+
+It is off as shipped because a hand on the portafilter also keeps the scale
+from reading still, and unlike vibration it does not average out. With the
+handling on, keep your hands off the portafilter until the result is on the
+screen: a steady hand can be weighed as coffee.
 
 ### Diagnosis
-Check **Menu → Diagnostics → "Noise Floor"** (see
+First check that coffee is coming out: beans in the hopper and nothing
+bridging above the burrs.
+
+For slow grinds, check **Menu → Diagnostics → "Noise Floor"** (see
 [Diagnostics System](FIRMWARE_SETUP.md#diagnostics-system) for details). If
 "Noise level: Too High" (red text) appears persistently, your load cell has
 sustained noise issues that will cause slow taring (>2 seconds). A warning icon
 (⚠) will appear in the top-right corner when sustained noise is detected.
 
 ### Resolution
+0. **Keep vibration away from the scale:** move the grinder off a surface it
+   shares with a 3D printer or another machine that shakes, or stand either
+   one on a damping mat. Where that cannot be done, see
+   [Shaky-bench handling](#shaky-bench-handling).
+
 1. **Check load cell wiring:**
    - Verify shielding wire connection per wiring diagram
    - Shorten load cell cables if possible

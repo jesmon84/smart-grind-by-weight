@@ -7,6 +7,31 @@ namespace {
 constexpr uint32_t kTouchI2CFrequencyHz = 300000;
 constexpr int kTouchI2CTimeoutMs = 5;
 constexpr char kTag[] = "TouchDriver";
+// The controller reports only a few contacts. A larger count is not an answer
+// from it: a bus nobody drives reads back as 0xFF, which would otherwise look
+// like a touch held in the far corner.
+constexpr uint8_t kMaxTouchPoints = 5;
+// A stuck bus fails every poll. It is reset after this many failures in a row
+// (about 0.8 s at the UI rate), at most once per interval.
+constexpr uint32_t kTouchFaultsBeforeBusReset = 50;
+constexpr uint32_t kTouchBusResetIntervalMs = 2000;
+// The controller reports touches again about 300 ms after its reset line is
+// released. Pulsing the line waits 150 ms after the release before
+// controller_was_reset() is called; this covers the rest.
+constexpr uint32_t kTouchRestartMs = 150;
+
+// With ACK checking off (DEBUG_SUPPRESS_TOUCH_I2C_ERRORS) the driver no longer
+// reports the controller's idle NACKs, so any error left is a failed transfer.
+// With it on, a NACK arrives as ESP_ERR_INVALID_STATE and only a timeout says
+// that the bus itself is stuck.
+bool is_bus_fault(esp_err_t err) {
+#if DEBUG_SUPPRESS_TOUCH_I2C_ERRORS
+    (void)err;
+    return true;
+#else
+    return err == ESP_ERR_TIMEOUT;
+#endif
+}
 
 void suppress_touch_i2c_logs() {
 #if DEBUG_SUPPRESS_TOUCH_I2C_ERRORS
@@ -81,7 +106,13 @@ void TouchDriver::update() {
     if (!initialized || disabled || device_handle == nullptr) {
         return;
     }
-    
+    if (restarting) {
+        if (millis() - restart_started_ms < kTouchRestartMs) {
+            return;
+        }
+        restarting = false;
+    }
+
     const bool was_pressed = last_touch.pressed;
     last_touch.just_pressed = press_event_pending;
 
@@ -93,11 +124,21 @@ void TouchDriver::update() {
         if (err != ESP_ERR_INVALID_STATE && err != ESP_ERR_TIMEOUT) {
             ESP_LOGW(kTag, "Touch poll failed: %s", esp_err_to_name(err));
         }
+        read_error_count.fetch_add(1);
+        if (is_bus_fault(err)) {
+            note_bus_fault();
+        }
         last_touch.pressed = false;
         return;
     }
-    
+    consecutive_bus_faults = 0;
+
     uint8_t touches = buf[0] & 0x0F;
+    if (touches > kMaxTouchPoints) {
+        read_error_count.fetch_add(1);
+        last_touch.pressed = false;
+        return;
+    }
     if (touches > 0) {
         last_touch.x = ((buf[1] & 0x0F) << 8) | buf[2];
         last_touch.y = ((buf[3] & 0x0F) << 8) | buf[4];
@@ -122,6 +163,26 @@ void TouchDriver::update() {
     }
 }
 
+// Counts a failed poll and, once the bus has clearly stopped working, clocks
+// it free and restarts the I2C controller. Touch then works again without a
+// power cycle.
+void TouchDriver::note_bus_fault() {
+    if (++consecutive_bus_faults < kTouchFaultsBeforeBusReset) {
+        return;
+    }
+    const uint32_t now_ms = millis();
+    if (now_ms - last_bus_reset_ms < kTouchBusResetIntervalMs) {
+        return;
+    }
+    last_bus_reset_ms = now_ms;
+    consecutive_bus_faults = 0;
+
+    const esp_err_t reset_result = i2c_master_bus_reset(bus_handle);
+    const uint32_t resets = bus_reset_count.fetch_add(1) + 1;
+    LOG_BLE("[TOUCH] Bus stopped answering; reset %lu: %s\n",
+            static_cast<unsigned long>(resets), esp_err_to_name(reset_result));
+}
+
 void TouchDriver::disable() {
     disabled = true;
     last_touch.pressed = false;  // Clear any active touch state
@@ -141,4 +202,18 @@ void TouchDriver::consume_press_event() {
 uint32_t TouchDriver::get_ms_since_last_touch() const {
     if (!initialized || disabled) return 0;
     return millis() - last_touch_time;
+}
+
+bool TouchDriver::quiet_for(uint32_t ms) const {
+    if (!initialized || disabled) return true;
+    return !last_touch.pressed && millis() - last_touch_time >= ms;
+}
+
+void TouchDriver::controller_was_reset() {
+    restarting = true;
+    restart_started_ms = millis();
+    last_touch.pressed = false;
+    last_touch.just_pressed = false;
+    press_event_pending = false;
+    consecutive_bus_faults = 0;
 }

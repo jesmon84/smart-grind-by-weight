@@ -12,6 +12,7 @@
 #include "../../controllers/grind_controller.h"
 #include "../../controllers/grind_mode_traits.h"
 #include "../../logging/grind_logging.h"
+#include "../../network/network_manager.h"
 #include "../../system/diagnostics_controller.h"
 #include "../../system/screensaver_settings.h"
 #include "../../system/statistics_manager.h"
@@ -68,6 +69,7 @@ void MenuUIController::register_events() {
     EventBridgeLVGL::register_handler(ET::COAST_RATIO_SLIDER_RELEASED, [this](lv_event_t*) { handle_coast_ratio_slider_released(); });
     EventBridgeLVGL::register_handler(ET::MOTOR_LATENCY_SLIDER, [this](lv_event_t*) { handle_motor_latency_slider(); });
     EventBridgeLVGL::register_handler(ET::MOTOR_LATENCY_SLIDER_RELEASED, [this](lv_event_t*) { handle_motor_latency_slider_released(); });
+    EventBridgeLVGL::register_handler(ET::SHAKY_BENCH_TOGGLE, [this](lv_event_t*) { handle_shaky_bench_toggle(); });
 
     EventBridgeLVGL::register_handler(ET::BRIGHTNESS_NORMAL_SLIDER, [this](lv_event_t*) { handle_brightness_normal_slider(); });
     EventBridgeLVGL::register_handler(ET::BRIGHTNESS_NORMAL_SLIDER_RELEASED, [this](lv_event_t*) { handle_brightness_normal_slider_released(); });
@@ -77,6 +79,8 @@ void MenuUIController::register_events() {
     EventBridgeLVGL::register_handler(ET::SCREENSAVER_STARTUP_TOGGLE, [this](lv_event_t*) { handle_screensaver_startup_toggle(); });
     EventBridgeLVGL::register_handler(ET::SCREENSAVER_SLEEP_TOGGLE, [this](lv_event_t*) { handle_screensaver_sleep_toggle(); });
     EventBridgeLVGL::register_handler(ET::DISPLAY_OFF_TOGGLE, [this](lv_event_t*) { handle_display_off_toggle(); });
+    EventBridgeLVGL::register_handler(ET::WIFI_TOGGLE, [this](lv_event_t*) { handle_wifi_toggle(); });
+    EventBridgeLVGL::register_handler(ET::WIFI_REST_TOGGLE, [this](lv_event_t*) { handle_wifi_rest_toggle(); });
 
     // Note: Event registration for menu widgets is done in the page creation functions
     // (menu_screen.cpp) because the menu is created lazily and destroyed on hide.
@@ -695,6 +699,23 @@ void MenuUIController::handle_motor_latency_slider_released() {
     LOG_DEBUG_PRINTF("Motor response latency manually set to: %dms\n", latency_ms);
 }
 
+// Stores the choice; it applies from the next grind. A choice that could not
+// be stored is not left showing on the switch.
+void MenuUIController::handle_shaky_bench_toggle() {
+    if (!ui_manager_) return;
+
+    auto* toggle = ui_manager_->menu_screen.get_shaky_bench_toggle();
+    if (!toggle) return;
+
+    const bool enabled = lv_obj_has_state(toggle, LV_STATE_CHECKED);
+    auto* grind_controller = ui_manager_->get_grind_controller();
+    if (!grind_controller || !grind_controller->save_shaky_bench(enabled)) {
+        ui_manager_->menu_screen.set_shaky_bench_toggle(
+            grind_controller ? grind_controller->shaky_bench_enabled() : !enabled);
+        LOG_BLE("Could not save the shaky-bench setting; retaining the stored one\n");
+    }
+}
+
 void MenuUIController::handle_brightness_normal_slider() {
     if (!ui_manager_) return;
 
@@ -792,6 +813,30 @@ void MenuUIController::handle_screensaver_sleep_toggle() {
     prefs.putBool("sleep", enabled);
     prefs.end();
 
+}
+
+// Wi-Fi on or off. The network code carries it out on its own task and
+// stores the choice; the page shows the result on its next refresh.
+void MenuUIController::handle_wifi_toggle() {
+    auto* toggle = ui_manager_->menu_screen.get_wifi_toggle();
+    if (!toggle) return;
+
+    const bool enabled = lv_obj_has_state(toggle, LV_STATE_CHECKED);
+    network_manager.request_enabled(enabled);
+    LOG_BLE("Wi-Fi switched %s by user\n", enabled ? "on" : "off");
+}
+
+// Whether Wi-Fi pauses while a grind runs.
+void MenuUIController::handle_wifi_rest_toggle() {
+    auto* toggle = ui_manager_->menu_screen.get_wifi_rest_toggle();
+    if (!toggle) return;
+
+    const bool rest = lv_obj_has_state(toggle, LV_STATE_CHECKED);
+    if (!network_manager.set_rest_while_grinding(rest)) {
+        LOG_BLE("Wi-Fi pause while grinding: the choice could not be stored\n");
+    }
+    LOG_BLE("Wi-Fi pause while grinding: %s\n", rest ? "on" : "off");
+    ui_manager_->menu_screen.update_network_status();
 }
 
 void MenuUIController::handle_display_off_toggle() {
